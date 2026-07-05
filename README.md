@@ -41,7 +41,7 @@
 | PMIC | RK808 |
 | HDMI | HDMI 2.0 |
 | USB | USB 3.0 x1 + USB 2.0 x4 + USB Type-C |
-| IR | 红外接收器 |
+
 
 ### 与TN3399-V3的主要硬件差异
 
@@ -60,7 +60,6 @@
 | RTC | HYM8563 | 无 |
 | 风扇 | gpio-fan | 无 |
 | 功放 | NS4258 | 无 |
-| IR接收器 | 无 | 有 (gpio0 RK_PA6) |
 | 电源按键 | 无独立定义 | gpio0 RK_PA5 (ACTIVE_LOW) |
 | USB 5V供电 | 单路 | 多路独立控制 |
 
