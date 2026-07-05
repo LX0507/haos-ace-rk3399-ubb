@@ -13,7 +13,7 @@ new file mode 100644
 index 0000000..e8a1f7c2a
 --- /dev/null
 +++ b/arch/arm64/boot/dts/rockchip/rk3399-ubb.dts
-@@ -0,0 +1,720 @@
+@@ -0,0 +1,822 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Device Tree for Rockchip RK3399 UBTECH Board Bingo
@@ -593,7 +593,7 @@ index 0000000..e8a1f7c2a
 +		};
 +
 +		bt_wake_l: bt-wake-l {
-+			rockchip,pins = <0 RK_PD2 RK_FUNC_GPIO &pcfg_pull_none>;
++			rockchip,pins = <2 RK_PD2 RK_FUNC_GPIO &pcfg_pull_none>;
 +		};
 +	};
 +
@@ -775,7 +775,7 @@ index 0000000..e8a1f7c2a
 +		compatible = "brcm,bcm43455-bt";
 +		clocks = <&rk808 1>;
 +		clock-names = "lpo";
-+		device-wakeup-gpios = <&gpio0 RK_PD2 GPIO_ACTIVE_HIGH>;
++		device-wakeup-gpios = <&gpio2 RK_PD2 GPIO_ACTIVE_HIGH>;
 +		host-wakeup-gpios = <&gpio0 RK_PA4 GPIO_ACTIVE_HIGH>;
 +		shutdown-gpios = <&gpio0 RK_PB1 GPIO_ACTIVE_HIGH>;
 +		pinctrl-names = "default";

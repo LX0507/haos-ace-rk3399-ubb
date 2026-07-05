@@ -31,13 +31,13 @@ jobs:
         target: ${{ fromJson(needs.prepare.outputs.matrix) }}
     name: Build ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4.2.0  # 升级到稳定版，适配Node.js 24
+      - uses: actions/checkout@v4.3.0
         with:
           fetch-depth: 0
           submodules: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.0.0  # 升级到v3，适配Node.js 24
+        uses: docker/setup-buildx-action@v3.11.0
 
       - name: Initialization environment and Free up disk space
         run: |
@@ -109,7 +109,7 @@ jobs:
         run: echo "DATE=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
 
       - name: Publish to GitHub Releases
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
