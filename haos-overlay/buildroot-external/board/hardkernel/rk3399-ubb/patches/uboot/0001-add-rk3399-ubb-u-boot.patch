@@ -11,7 +11,7 @@ index 00000000..2a3b4c5d
 + */
 +
 +#include "rk3399-u-boot.dtsi"
-+#include "rk3399-sdram-lpddr3-1600.dtsi"
++#include "rk3399-sdram-lpddr3-4GB-1600.dtsi"
 diff --git a/configs/rk3399-ubb-rk3399_defconfig b/configs/rk3399-ubb-rk3399_defconfig
 new file mode 100644
 index 00000000..3c4d5e6f
