@@ -4,7 +4,7 @@ echo -e "\033[34;43m编译本工程，系统必须支持docker\033[0m"
 echo -e "\033[34;43mBuilding this project, the system must support Docker\033[0m"
 
 
-DEFAULT_TARGET="tn3399_v3 k2b_h618 rk3399_custom"
+DEFAULT_TARGET="tn3399_v3 k2b_h618 rk3399_custom rk3399_ubb"
 
 TARGET="${1:-$DEFAULT_TARGET}" 
 
