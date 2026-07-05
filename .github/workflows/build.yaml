@@ -19,7 +19,7 @@ jobs:
         id: set-matrix
         run: |
           # 定义目标列表
-          TARGETS='["tn3399_v3"]'
+          TARGETS='["tn3399_v3","rk3399_ubb"]'
           echo "matrix=$TARGETS" >> $GITHUB_OUTPUT
 
   build:
