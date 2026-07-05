@@ -17,7 +17,7 @@ jobs:
         with:
           token: ${{ secrets.PAT }}  # 传入准备好的PAT令牌
           path: operating-system        # 子模块在父仓库中的路径
-          ref: main                  # 子模块要同步的分支
+          ref: 17.3                  # 子模块要同步的标签
           pr_branch: auto-submodule-update  # 创建PR的分支名
           target_branch: master        # PR要合并到的父仓库分支
           pr_body: "Automatically sync latest submodule changes. This PR will auto-merge after checks pass."  # 自定义PR描述
