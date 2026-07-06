@@ -25,6 +25,8 @@ jobs:
   build:
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -131,16 +133,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: output/images/haos*
-          tag_name: ${{ github.ref_name }}
-          name: "Haos-ace Release ${{ github.ref_name }} (${{ steps.date.outputs.DATE }})"
+          tag_name: v17.3-${{ steps.date.outputs.DATE }}
+          name: "HAOS-ACE v17.3 (${{ steps.date.outputs.DATE }})"
           body: |
-            自动化构建的应用服务，包含以下文件：
+            自动化构建的 HAOS 17.3 加速版镜像，包含以下文件：
             - haos*.img.xz  压缩烧写镜像
             - haos*.raucb   OTA 更新包
 
-            * 版本: ${{ github.ref_name }}
+            * HAOS 版本: 17.3
+            * 构建日期: ${{ steps.date.outputs.DATE }}
             * Commit: ${{ github.sha }}
-            * 版本信息: 
-              ${{ github.event.head_commit.message }}
-            * 提交者: ${{ github.event.head_commit.author.name }}
           draft: false
+          prerelease: false
