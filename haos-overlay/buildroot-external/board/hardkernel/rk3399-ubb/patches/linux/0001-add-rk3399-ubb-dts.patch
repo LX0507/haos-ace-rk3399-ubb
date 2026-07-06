@@ -13,7 +13,7 @@ new file mode 100644
 index 0000000..e8a1f7c2a
 --- /dev/null
 +++ b/arch/arm64/boot/dts/rockchip/rk3399-ubb.dts
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,823 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Device Tree for Rockchip RK3399 UBTECH Board Bingo
@@ -671,6 +671,7 @@ index 0000000..e8a1f7c2a
 +	mmc-hs400-1_8v;
 +	mmc-hs400-enhanced-strobe;
 +	non-removable;
++	disable-cqe-dcmd;
 +	status = "okay";
 +};
 +
