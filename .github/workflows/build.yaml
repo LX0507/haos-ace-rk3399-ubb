@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [tn3399_v3, rk3399_ubb]
+        target: [rk3399_ubb] # 构建目标
     name: Build ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4.3.0
