@@ -1,0 +1,42 @@
+#!/bin/sh
+# HAOS RK3399 UBB - Ensure critical /etc files exist
+# This runs before hassos-overlay to ensure base files are available
+# for bind-mounts and supervisor container setup
+
+set -e
+
+echo "[haos-ensure-files] Checking critical /etc files..."
+
+# Ensure /etc/hosts exists (critical for supervisor)
+if [ ! -f /etc/hosts ]; then
+    echo "[haos-ensure-files] Creating /etc/hosts"
+    cat > /etc/hosts << 'HOSTSEOF'
+127.0.0.1	localhost localhost.localdomain homeassistant
+::1		localhost localhost.localdomain homeassistant
+HOSTSEOF
+fi
+
+# Ensure /etc/hostname exists
+if [ ! -f /etc/hostname ]; then
+    echo "[haos-ensure-files] Creating /etc/hostname"
+    echo "homeassistant" > /etc/hostname
+fi
+
+# Ensure /etc/resolv.conf exists (symlink or file)
+if [ ! -e /etc/resolv.conf ]; then
+    echo "[haos-ensure-files] Creating /etc/resolv.conf"
+    echo "nameserver 127.0.0.1" > /etc/resolv.conf
+fi
+
+# Ensure machine-id exists (required by systemd/dbus)
+if [ ! -f /etc/machine-id ]; then
+    echo "[haos-ensure-files] Creating /etc/machine-id"
+    : > /etc/machine-id
+fi
+
+# Create overlay directories if they don't exist
+mkdir -p /mnt/overlay/etc 2>/dev/null || true
+mkdir -p /mnt/data/docker 2>/dev/null || true
+mkdir -p /run/docker 2>/dev/null || true
+
+echo "[haos-ensure-files] Done."

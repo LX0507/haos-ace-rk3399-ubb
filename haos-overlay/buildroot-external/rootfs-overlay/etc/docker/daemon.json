@@ -1,16 +1,1 @@
-{
-    "storage-driver": "overlay2",
-    "log-driver": "journald",
-    "experimental": true,
-    "ip6tables": true,
-    "exec-opts": ["native.cgroupdriver=systemd"],
-    "log-opts": {
-        "tag": "{{.Name}}"
-    },
-    "registry-mirrors": [
-
-    ],
-    "data-root": "/mnt/data/docker",
-    "deprecated-key-path": "/mnt/overlay/etc/docker/key.json",
-    "bip": "172.30.232.1/23"
-}
+{"storage-driver": "overlay2", "log-driver": "journald", "experimental": true, "ip6tables": true, "exec-opts": ["native.cgroupdriver=systemd"], "live-restore": true, "iptables": true, "log-opts": {"tag": "{{.Name}}"}, "registry-mirrors": [], "data-root": "/mnt/data/docker", "deprecated-key-path": "/mnt/overlay/etc/docker/key.json", "bip": "172.30.232.1/23", "default-shm-size": "64m"}

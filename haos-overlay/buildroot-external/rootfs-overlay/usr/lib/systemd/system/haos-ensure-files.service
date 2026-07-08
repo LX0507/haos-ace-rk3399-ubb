@@ -1,0 +1,13 @@
+[Unit]
+Description=Ensure critical /etc files exist for HAOS
+DefaultDependencies=no
+Before=hassos-overlay.service hassos-bind.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/haos-ensure-files
+
+[Install]
+WantedBy=local-fs.target

@@ -1,0 +1,6 @@
+# Static file system information
+#
+# See fstab(5) for details
+# <device>	<mountpoint>	<type>	<options>	<dump>	<fsck>
+
+/dev/disk/by-label/hassos-boot	/mnt/boot	auto	defaults,sync	0	0
