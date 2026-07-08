@@ -152,22 +152,27 @@ echo "✅ overlay 合并完成"
 # 计算并行编译数（容器内 2x 物理核数）
 PARALLEL_JOBS=$(( $(nproc) * 2 ))
 
-# 使用本地包装脚本（支持 sudo docker）
-# 注意：build.sh 应从仓库根目录调用；不要 cd 到子目录
-ENTER_SCRIPT="./scripts/enter_local.sh"
-if [ ! -f "$ENTER_SCRIPT" ]; then
-    echo "❌ 找不到 $ENTER_SCRIPT"
-    exit 1
-fi
-
 for target in $TARGET; do
     echo -e "Building for target: \033[34;43m$target\033[0m"
-    echo "Command: $ENTER_SCRIPT make -j $PARALLEL_JOBS $target"
-    if $ENTER_SCRIPT make -j $PARALLEL_JOBS $target; then
-        echo "Build for $target succeeded."
+
+    if [ "$DOCKER_CMD" = "docker" ]; then
+        # CI 或用户已在 docker 组：直接用上游 enter.sh（最可靠）
+        echo "Command: (cd operating-system && ./scripts/enter.sh make -j $PARALLEL_JOBS $target)"
+        if ( cd operating-system && ./scripts/enter.sh make -j $PARALLEL_JOBS "$target" ); then
+            echo "Build for $target succeeded."
+        else
+            echo "Build for $target failed."
+            exit 1
+        fi
     else
-        echo "Build for $target failed."
-        exit 1
+        # sudo docker 模式（本地构建）：用 wrapper 脚本
+        echo "Command: bash scripts/enter_local.sh make -j $PARALLEL_JOBS $target"
+        if bash scripts/enter_local.sh make -j $PARALLEL_JOBS "$target"; then
+            echo "Build for $target succeeded."
+        else
+            echo "Build for $target failed."
+            exit 1
+        fi
     fi
 done
 

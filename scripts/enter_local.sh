@@ -58,7 +58,8 @@ if ! $DOCKER image inspect hassos:local &> /dev/null; then
 fi
 
 # 启动容器执行命令
-exec $DOCKER run -it --rm --privileged \
+# 不用 -t（非交互环境无 TTY），-i 保持 stdin 可用
+exec $DOCKER run --rm --privileged -i \
     -v "$(pwd):/build" -v "${CACHE_DIR}:/cache" \
     -e BUILDER_UID="${BUILDER_UID}" -e BUILDER_GID="${BUILDER_GID}" \
     hassos:local "$@"
