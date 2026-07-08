@@ -72,7 +72,7 @@ index 00000000..3c4d5e6f
 +CONFIG_REGULATOR_PWM=y
 +CONFIG_REGULATOR_RK8XX=y
 +CONFIG_PWM_ROCKCHIP=y
-+CONFIG_BAUDRATE=1500000
++CONFIG_BAUDRATE=115200
 +CONFIG_DEBUG_UART_SHIFT=2
 +CONFIG_SYS_NS16550_MEM32=y
 +CONFIG_SYSRESET=y
@@ -122,7 +122,7 @@ index 00000000..4d5e6f7a
 +	};
 +
 +	chosen {
-+		stdout-path = "serial2:1500000n8";
++		stdout-path = "serial2:115200n8";
 +	};
 +
 +	clkin_gmac: external-gmac-clock {

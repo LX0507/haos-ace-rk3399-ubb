@@ -1,1 +1,1 @@
-earlycon=uart8250,mmio32,0xff1a0000 console=tty1 console=ttyS2,1500000 systemd.log_level=debug systemd.log_target=kmsg loglevel=7 ignore_loglevel systemd.watchdog=0 panic=0 watchdog.open_timeout=0
+earlycon=uart8250,mmio32,0xff1a0000 console=tty1 console=ttyS2,115200 systemd.log_level=info systemd.log_target=kmsg loglevel=6 systemd.watchdog=0 panic=0 watchdog.open_timeout=0

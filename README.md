@@ -133,9 +133,12 @@ haos-overlay/buildroot-external/
 - 工程会自动下载和准备交叉编译工具链，无需手动配置。
 
 ```bash
-# 下载代码
+# 下载代码（必须使用 --recurse-submodules 拉取 operating-system 子模块）
 git clone --recurse-submodules https://github.com/LX0507/haos-ace-rk3399-ubb.git
 cd haos-ace-rk3399-ubb
+
+# 如果已经克隆但忘记 --recurse-submodules，可执行：
+# git submodule update --init --recursive
 
 # docker 安装
 sudo apt update
@@ -151,7 +154,26 @@ sudo apt update
 
 # 安装 Docker
 sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 将当前用户加入 docker 组（避免每次都需 sudo）
+sudo usermod -aG docker $USER
+newgrp docker   # 或重新登录终端
+
+# 验证 Docker 可用
+docker info    # 不要加 sudo，能正常输出版本信息即可
 ```
+
+#### 常见本地构建问题
+
+| 错误信息 | 原因 | 解决方法 |
+|---------|------|---------|
+| `operating-system/scripts/enter.sh: No such file or directory` | submodule 未初始化 | `git submodule update --init --recursive` |
+| `permission denied while trying to connect to the docker API` | 当前用户不在 docker 组 | `sudo usermod -aG docker $USER` 然后重新登录 |
+| `cp: 无法通过符号链接 './operating-system/buildroot-external/rootfs-overlay/etc/resolv.conf' 进行操作` | 本仓库已修复（删除冗余 overlay 文件）。如仍出现，升级到最新代码 | `git pull` |
+| `cannot open '/dev/loop0'` 或 `losetup: failed to set up loop device` | 缺少循环设备 | `sudo losetup -f` 或 `sudo mknod /dev/loop0 b 7 0` |
+| `failed to build hassos:local: command not found: docker` | PATH 中找不到 docker | 安装 docker 后重新登录终端 |
+
+> **提示**：本项目使用 `build.sh` 包装 `scripts/enter_local.sh`，后者自动检测 docker 权限（普通用户或 sudo），无需额外配置。GitHub Actions 仍走原 `operating-system/scripts/enter.sh` 路径。
 
 ### 2. 一键编译
 

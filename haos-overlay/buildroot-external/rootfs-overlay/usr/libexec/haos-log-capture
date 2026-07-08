@@ -1,0 +1,55 @@
+#!/bin/sh
+# HAOS RK3399 UBB - Persistent log capture
+# Saves pstore, dmesg, and journal to /mnt/data/sos-logs/
+# for post-reboot debugging
+set -e
+
+LOG_DIR="/mnt/data/sos-logs"
+mkdir -p "$LOG_DIR" 2>/dev/null || exit 0
+
+TS=$(date +%Y%m%d-%H%M%S)
+
+# 1. Save pstore from previous boot (if any — only present after crash/watchdog reboot)
+if [ -d /sys/fs/pstore ] && [ -n "$(ls /sys/fs/pstore/ 2>/dev/null)" ]; then
+    echo "[log-capture] Saving pstore logs from previous boot..."
+    PSTORE_DIR="$LOG_DIR/pstore-$TS"
+    mkdir -p "$PSTORE_DIR"
+    for f in /sys/fs/pstore/*; do
+        [ -f "$f" ] || continue
+        cp "$f" "$PSTORE_DIR/$(basename "$f")" 2>/dev/null || true
+    done
+    # Also dump dmesg from pstore console log if available
+    if [ -f "$PSTORE_DIR/dmesg-ramoops-"* ]; then
+        echo "[log-capture] Found ramoops dmesg from previous boot"
+    fi
+    # Clear pstore so we only capture new crashes next time
+    # (comment out the next line if you want to keep pstore entries)
+    # echo 1 > /sys/fs/pstore/clear 2>/dev/null || true
+fi
+
+# 2. Save current dmesg
+dmesg --time-format=iso > "$LOG_DIR/dmesg-$TS.log" 2>/dev/null || true
+
+# 3. Save journal: current boot and previous boot
+journalctl --boot=0 --no-pager > "$LOG_DIR/journal-current-$TS.log" 2>/dev/null || true
+journalctl --boot=-1 --no-pager > "$LOG_DIR/journal-previous-$TS.log" 2>/dev/null || true
+
+# 4. Save failed systemd services
+systemctl --failed --no-pager > "$LOG_DIR/failed-units-$TS.txt" 2>/dev/null || true
+
+# 5. Save boot analysis (which services took longest)
+systemd-analyze blame --no-pager > "$LOG_DIR/boot-blame-$TS.txt" 2>/dev/null || true
+systemd-analyze critical-chain --no-pager > "$LOG_DIR/critical-chain-$TS.txt" 2>/dev/null || true
+
+# 6. Cleanup: keep only the last 5 sets of logs
+for prefix in dmesg journal-current journal-previous failed-units boot-blame critical-chain; do
+    ls -t "$LOG_DIR/${prefix}-"* 2>/dev/null | tail -n +6 | while read -r oldfile; do
+        rm -f "$oldfile" 2>/dev/null || true
+    done
+done
+# Cleanup old pstore dirs
+ls -dt "$LOG_DIR"/pstore-* 2>/dev/null | tail -n +6 | while read -r olddir; do
+    rm -rf "$olddir" 2>/dev/null || true
+done
+
+echo "[log-capture] Logs saved to $LOG_DIR (timestamp: $TS)"

@@ -1,0 +1,9 @@
+[Unit]
+Description=HAOS log capture (dmesg/journal/pstore to /mnt/data/sos-logs)
+After=local-fs.target systemd-journald.service
+ConditionPathExists=/mnt/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/haos-log-capture
+RemainAfterExit=no

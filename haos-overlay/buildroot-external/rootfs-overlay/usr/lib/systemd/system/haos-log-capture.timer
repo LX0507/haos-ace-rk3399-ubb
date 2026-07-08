@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic HAOS log capture
+
+[Timer]
+OnBootSec=15
+OnUnitActiveSec=60
+Unit=haos-log-capture.service
+
+[Install]
+WantedBy=timers.target
