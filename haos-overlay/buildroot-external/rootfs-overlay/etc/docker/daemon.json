@@ -3,6 +3,7 @@
     "log-driver": "journald",
     "experimental": true,
     "ip6tables": true,
+    "exec-opts": ["native.cgroupdriver=systemd"],
     "log-opts": {
         "tag": "{{.Name}}"
     },
