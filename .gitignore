@@ -5,3 +5,6 @@ haos-overlay/buildroot-external/rootfs-overlay/usr/lib/systemd/system/multi-user
 haos-overlay/buildroot-external/rootfs-overlay/usr/lib/systemd/system/assismgr.service
 haos-overlay/buildroot-external/rootfs-overlay/usr/sbin/assismgr
 output
+build22_log.txt
+build22_logs.zip
+build22_logs/
