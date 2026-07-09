@@ -836,6 +836,10 @@ index 0000000..e8a1f7c2a
 +	status = "okay";
 +};
 +
++&display_subsystem {
++	status = "okay";
++};
++
 +&vopb {
 +	status = "okay";
 +};
