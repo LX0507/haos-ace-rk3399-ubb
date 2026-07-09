@@ -2,7 +2,10 @@
 Description=Ensure critical /etc files exist for HAOS
 DefaultDependencies=no
 Before=hassos-overlay.service hassos-bind.target
-After=local-fs.target
+# Do NOT use After=local-fs.target — it creates an ordering cycle:
+# local-fs.target → bind-mounts → hassos-overlay.service → haos-ensure-files.service → local-fs.target
+# Instead, rely on the overlay partition mount (mnt-overlay.mount) being ready
+After=mnt-overlay.mount
 
 [Service]
 Type=oneshot
@@ -10,4 +13,4 @@ RemainAfterExit=yes
 ExecStart=/usr/libexec/haos-ensure-files
 
 [Install]
-WantedBy=local-fs.target
+WantedBy=hassos-bind.target
