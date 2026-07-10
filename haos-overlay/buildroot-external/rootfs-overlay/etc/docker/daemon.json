@@ -8,7 +8,11 @@
   "log-opts": {
     "tag": "{{.Name}}"
   },
-  "registry-mirrors": [],
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.mirrors.ustc.edu.cn",
+    "https://hub-mirror.c.163.com"
+  ],
   "data-root": "/mnt/data/docker",
   "deprecated-key-path": "/mnt/overlay/etc/docker/key.json",
   "bip": "172.30.232.1/23",
