@@ -1,17 +1,19 @@
 # HAOS for RK3399-UBB build system
 
-- 本项目forked from [twfjcn/haos-ace-tn3399-v3](https://github.com/twfjcn/haos-ace-tn3399-v3)（原项目forked from [LanSilence/haos-ace](https://github.com/LanSilence/haos-ace)），在原项目基础上增加了对 **RK3399 UBTECH Board Bingo** 主板的适配。
-- 时间同步服务器保留使用国内服务器，原项目的国内镜像仓库等加速去掉了，保持跟HA官方一致。
+- 本项目 forked from [twfjcn/haos-ace-tn3399-v3](https://github.com/twfjcn/haos-ace-tn3399-v3)（原项目 forked from [LanSilence/haos-ace](https://github.com/LanSilence/haos-ace)），在原项目基础上增加了对 **RK3399 UBTECH Board Bingo** 主板的适配。
+- 针对中国国内网络环境进行了专项优化（Docker 镜像加速、国内 DNS/NTP 服务器、GitHub 下载加速）。
+- 保留了上海原项目 [LanSilence/assismgr](https://github.com/LanSilence/assismgr) 后台管理系统（:4000 端口），集成了 [LanSilence/hamqtt](https://github.com/LanSilence/hamqtt) MQTT 客户端库。
 
-- 系统ota升级请从发布页面下载最新raucb升级包，然后登录 http://ip:4000 后台进行上传升级，后台默认用户名：admin，密码：123456。
+> **OTA 升级**：从 [Release](https://github.com/LX0507/haos-ace-rk3399-ubb/releases) 页面下载最新 raucb 升级包，登录 `http://<设备IP>:4000` 后台进行上传升级。
+> 后台默认用户名：`admin`，密码：`123456`。
 
 ---
 
 # Home Assistant OS Accelerated China Edition（haos-ace） Build System
 
-本工程以 Home Assistant OS 官方源码为子模块，自动拉取并编译。通过本地 haos-overlay 目录结构，覆盖和定制官方源码配置，实现新开发板的快速适配。
+本工程以 Home Assistant OS 官方源码为子模块，自动拉取并编译。通过本地 `haos-overlay` 目录结构，覆盖和定制官方源码配置，实现新开发板的快速适配。
 
-本工程为 Home Assistant OS 在 Allwinner H618-k2b 和 Rockchip RK3399 平台的完整构建系统，支持内核、U-Boot、固件、根文件系统、分区镜像等一站式自动化编译与打包。
+**内核**: Linux 6.12.85 mainline | **HAOS 基线**: 17.3 | **Buildroot**: 2025.02.12
 
 ---
 
@@ -20,8 +22,8 @@
 | 主板 | SoC | Build目标 | 说明 |
 |------|-----|-----------|------|
 | TN3399-V3 | RK3399 | `tn3399_v3` | 原项目适配的开发板 |
-| KickPi K2B | H618 | `k2b_h618` | Allwinner H618开发板 |
-| RK3399-Custom | RK3399 | `rk3399_custom` | 类似rk3399pc的板子 |
+| KickPi K2B | H618 | `k2b_h618` | Allwinner H618 开发板 |
+| RK3399-Custom | RK3399 | `rk3399_custom` | 类似 rk3399pc 的板子 |
 | **RK3399-UBB** | **RK3399** | **`rk3399_ubb`** | **RK3399 UBTECH Board Bingo（本项目新增适配）** |
 
 ---
@@ -33,317 +35,384 @@
 | 项目 | 规格 |
 |------|------|
 | 主板型号 | Rockchip RK3399 UBTECH Board Bingo |
-| SoC | Rockchip RK3399 (双核Cortex-A72 + 四核Cortex-A53) |
+| SoC | Rockchip RK3399 (双核 Cortex-A72 + 四核 Cortex-A53) |
 | 内存 | 4GB LPDDR3 |
-| 存储 | 32GB eMMC (HS400 Enhanced Strobe) |
+| 存储 | 32GB eMMC |
 | WiFi/BT | Broadcom BCM43455 (SDIO/UART) |
-| 以太网 | RGMII千兆以太网 (Realtek RTL8211F) |
+| 以太网 | RGMII 千兆以太网 (Realtek RTL8211F) |
 | PMIC | RK808 |
-| HDMI | HDMI 2.0 |
+| HDMI | HDMI 2.0 (通过 mainline DRM/VOP 驱动) |
 | USB | USB 3.0 x1 + USB 2.0 x4 + USB Type-C |
 
+### 启动流程
 
-### 与TN3399-V3的主要硬件差异
+```
+U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd init
+→ mount partitions → overlay init → Docker/containerd → Supervisor
+→ HA Core (landingpage → 完整镜像)
+```
+
+### 分区布局
+
+| 分区 | 标签 | 类型 | 大小 | 说明 |
+|------|------|------|------|------|
+| SPL Boot | — | raw (fixed offset) | — | idbloader + U-Boot |
+| Boot | `hassos-boot` | vfat | 8M | Kernel + DTB + U-Boot 脚本 |
+| Kernel A | `kernel0` | squashfs | 16M | Linux 内核 |
+| System A | `system0` | EROFS | 24M | 根文件系统 |
+| Overlay A | `hassos-overlay` | ext4 | 256M | 持久化覆盖层 |
+| Kernel B | `kernel1` | squashfs | 24M | 备用内核 (A/B 升级) |
+| System B | `system1` | EROFS | 24M | 备用系统 |
+| Bootstate | `bootstate` | ext4 | 8M | 启动状态 |
+| Data A | `hassos-data` | ext4 | 96M | 用户数据 |
+| Docker Data | `hassos-data-docker` | ext4 | 12.8G+ | Docker 镜像/容器存储 |
+
+### 与 TN3399-V3 的主要硬件差异
 
 | 项目 | TN3399-V3 | RK3399-UBB |
 |------|-----------|------------|
 | 内存类型 | DDR3 | LPDDR3 |
 | LED GPIO | gpio1 RK_PC2 (ACTIVE_LOW) | gpio0 RK_PD5 (ACTIVE_HIGH) |
-| 以太网PHY地址 | phy@0 | phy@1 |
+| 以太网 PHY | phy@0 | phy@1 |
 | GMAC tx_delay | 0x28 | 0x32 |
 | GMAC rx_delay | 0x10 | 0x11 |
-| eMMC模式 | HS400 | HS200 + HS400 + HS400 Enhanced Strobe |
-| SD卡检测 | cd-gpios | broken-cd |
-| BT芯片 | brcm,bcm4345c5-bt | brcm,bcm43455-bt |
-| WiFi板级NVRAM | 无板级特定 | brcm,bcm43455-fmac + keiiot,k019-cw43-dw NVRAM |
-| 音频codec | RT5640 | 无 |
+| eMMC 模式 | HS400 | HS200（主线内核兼容） |
+| SD 卡检测 | cd-gpios | broken-cd |
+| WiFi/BT 固件 | BCM4345C5 | BCM43455 (brcmfmac43455-sdio) |
+| 音频 codec | RT5640 | 无 |
 | RTC | HYM8563 | 无 |
 | 风扇 | gpio-fan | 无 |
-| 功放 | NS4258 | 无 |
 | 电源按键 | 无独立定义 | gpio0 RK_PA5 (ACTIVE_LOW) |
-| USB 5V供电 | 单路 | 多路独立控制 |
-
-### 适配文件清单
-
-```
-haos-overlay/buildroot-external/
-├── board/hardkernel/rk3399-ubb/
-│   ├── meta                          # 板级元数据
-│   ├── kernel.config                 # 内核配置片段
-│   ├── uboot.config                  # U-Boot配置片段
-│   ├── cmdline.txt                   # 内核启动参数
-│   ├── boot-env.txt                  # U-Boot环境变量
-│   ├── uboot-boot.ush                # U-Boot启动脚本
-│   ├── hassos-hook.sh                # 构建hook脚本
-│   ├── image-spl-spl.cfg             # genimage镜像配置
-│   ├── partition-spl-spl.cfg         # 分区配置
-│   ├── rkbin/                        # Rockchip预编译二进制
-│   │   ├── idbloader.img
-│   │   ├── loaderimage
-│   │   ├── rk3399_bl31_v1.36.elf
-│   │   ├── rk3399_bl32_v2.12.bin
-│   │   └── trust.img
-│   ├── patches/
-│   │   ├── linux/
-│   │   │   └── 0001-add-rk3399-ubb-dts.patch    # Linux内核设备树
-│   │   └── uboot/
-│   │       └── 0001-add-rk3399-ubb-u-boot.patch  # U-Boot适配
-│   └── rootfs-overlay/
-│       └── usr/lib/firmware/brcm/                # BCM43455 WiFi/BT固件
-│           ├── brcmfmac43455-sdio.bin
-│           ├── brcmfmac43455-sdio.clm_blob
-│           ├── brcmfmac43455-sdio.txt
-│           ├── brcmfmac43455-sdio.keiiot,k019-cw43-dw.txt
-│           └── BCM4345C0.hcd
-└── configs/
-    └── rk3399_ubb_defconfig           # Buildroot defconfig
-```
 
 ---
 
-## 系统功能
+## 适配历程与关键修复
 
-- ✅ 主板适配：H618-k2b、rk3399-custom、TN3399-V3、**RK3399-UBB**
-- ✅ 完整官方HAOS功能
-- ✅ 丰富的官方加载项
-- ✅ OTA升级功能
-- ✅ 无终端配网
-- ✅ WIFI、有线网络、蓝牙
-- ✅ http://homeassistant.local:4000 后台管理
+### RK3399-UBB 适配解决的问题（Build #11 → #30）
 
----
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| eMMC I/O 错误 | HS400 时序不兼容 mainline | 降级为 HS200 |
+| Docker 启动失败 | cgroup v2 unified 未配置 | `exec-opts native.cgroupdriver=systemd` |
+| 60 秒硬件看门狗重启 | BootROM 启动 DW 看门狗未接管 | `CONFIG_DW_WATCHDOG=y` + `watchdog.open_timeout=0` |
+| HDMI 无显示 | VOP 驱动未编译 + patch hunk header 行数不匹配导致 DTS 截断 | `CONFIG_ROCKCHIP_VOP=y` + 修正 patch 行数 |
+| 串口后半段乱码 | 波特率过高 (1.5M) + 日志级别过高 | 降为 115200 + loglevel=6 |
+| WiFi 固件加载失败 | Vendor 私有 NVRAM 属性与 mainline 冲突 | 清理为纯 mainline DTS |
+| DHCP 间歇性失败 | `autoconnect-retries-default=5` 过早放弃 | 改为 0（无限重试） |
+| Docker DNS 超时 | dockerd 直连 8.8.8.8 被路由器阻断 | 移除 daemon.json DNS，走 hassio_dns |
+| NetworkManager 配置语法错误 | `[connection]` 段不支持 `ipv4.dns` | 改用 `[global-dns]` / `dns=default` |
+| 4000 端口后台管理丢失 | assismgr 在适配中被误禁用 | 恢复安装 + GitHub 镜像加速下载 |
+| 日志无法持久保存 | 无 ramoops 配置 | pstore/ramoops + haos-log-capture service |
+| systemd ordering cycle | haos-ensure-files 依赖形成循环 | 修改 After / WantedBy 目标 |
+| Supervisor 机器类型错误 | `SUPERVISOR_MACHINE` 误改 | 保持 `qemuarm-64` |
+| containerd snapshotter 冲突 | `storage-driver=overlay2` 与新版冲突 | 移除显式 storage-driver |
 
-## 目录结构说明
+### 中国国内网络加速配置
 
-- `build.sh`：一键编译脚本，支持多平台参数。
-- `haos-overlay/`：本地定制与覆盖目录，结构与官方源码一致。
-- `operating-system/`：官方 Home Assistant OS 源码子模块。
-- `output/`：编译生成的所有产物，包括镜像、固件、分区文件等。
-- `Documentation/`：平台、配置、开发相关文档说明。
-- `scripts/`：辅助脚本，如工具链下载、内核更新等。
-- `tests/`：自动化测试相关内容。
+| 加速项 | 配置 | 说明 |
+|--------|------|------|
+| Docker Hub 镜像 | `registry-mirrors`: DaoCloud + 中科大 + 网易 | 加速 `docker.io` 镜像拉取 |
+| DNS 主 | 路由器 DHCP DNS（ISP 最快） | 优先使用本地 DNS |
+| DNS 后备 | 114.114.114.114 + 223.5.5.5 (AliDNS) + 119.29.29.29 (DNSPod) | 国内公共 DNS 服务器 |
+| NTP 时间同步 | ntp.aliyun.com + ntp.tencent.com | 国内 NTP 服务器 |
+| APT 源（构建阶段） | `mirrors.aliyun.com` 替代 `deb.debian.org` | 加速 Docker 镜像构建 |
+| GitHub 下载 | `gh.con.sh` + `ghproxy.com` 镜像 | 加速 assismgr 等 GitHub Release 下载 |
 
----
-
-## 快速开始
-
-### 1. 环境准备 (Ubuntu 24.04)
-
-- 推荐 Ubuntu 24.04+，需安装 `docker`、`git` 等常用工具。
-- 工程会自动下载和准备交叉编译工具链，无需手动配置。
-
-```bash
-# 下载代码（必须使用 --recurse-submodules 拉取 operating-system 子模块）
-git clone --recurse-submodules https://github.com/LX0507/haos-ace-rk3399-ubb.git
-cd haos-ace-rk3399-ubb
-
-# 如果已经克隆但忘记 --recurse-submodules，可执行：
-# git submodule update --init --recursive
-
-# docker 安装
-sudo apt update
-sudo apt install apt-transport-https curl
-
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-# 添加软件源，如果是低于ubuntu24 版本，添加源的方式有所不同
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# 更新软件包列表
-sudo apt update
-
-# 安装 Docker
-sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# 将当前用户加入 docker 组（避免每次都需 sudo）
-sudo usermod -aG docker $USER
-newgrp docker   # 或重新登录终端
-
-# 验证 Docker 可用
-docker info    # 不要加 sudo，能正常输出版本信息即可
-```
-
-#### 常见本地构建问题
-
-| 错误信息 | 原因 | 解决方法 |
-|---------|------|---------|
-| `operating-system/scripts/enter.sh: No such file or directory` | submodule 未初始化 | `git submodule update --init --recursive` |
-| `permission denied while trying to connect to the docker API` | 当前用户不在 docker 组 | `sudo usermod -aG docker $USER` 然后重新登录 |
-| `cp: 无法通过符号链接 './operating-system/buildroot-external/rootfs-overlay/etc/resolv.conf' 进行操作` | 本仓库已修复（删除冗余 overlay 文件）。如仍出现，升级到最新代码 | `git pull` |
-| `cannot open '/dev/loop0'` 或 `losetup: failed to set up loop device` | 缺少循环设备 | `sudo losetup -f` 或 `sudo mknod /dev/loop0 b 7 0` |
-| `failed to build hassos:local: command not found: docker` | PATH 中找不到 docker | 安装 docker 后重新登录终端 |
-
-> **提示**：本项目使用 `build.sh` 包装 `scripts/enter_local.sh`，后者自动检测 docker 权限（普通用户或 sudo），无需额外配置。GitHub Actions 仍走原 `operating-system/scripts/enter.sh` 路径。
-
-### 2. 一键编译
-
-以 RK3399-UBB 为例：
-```bash
-./build.sh rk3399_ubb
-```
-
-编译所有支持的平台：
-```bash
-./build.sh
-```
-
-以其他平台为例：
-```bash
-./build.sh tn3399_v3
-./build.sh k2b_h618
-./build.sh rk3399_custom
-```
-
-### 3. 产物说明
-
-编译完成后，主要产物位于 `output/images/` 目录，包括：
-
-- 系统镜像（如 `haos_rk3399-ubb-<version>.img.xz`）：用于烧录到eMMC/SD卡，直接启动。
-- 升级文件（如 `haos_rk3399-ubb-<version>.raucb`）：用于OTA升级。
-
-不同平台产物名称略有差异，具体请参考 `output/images/` 目录内容。
-
-### 4. 烧录与部署
-
-#### 烧录到eMMC
-```bash
-# 解压镜像
-xz -d haos_rk3399-ubb-*.img.xz
-
-# 使用rkdeveloptool或USB下载工具烧录
-# 进入Maskrom模式后：
-rkdeveloptool db MiniLoaderAll.bin
-rkdeveloptool wl 0 haos_rk3399-ubb-*.img
-rkdeveloptool rd
-```
-
-#### 烧录到SD卡
-```bash
-# 解压镜像
-xz -d haos_rk3399-ubb-*.img.xz
-
-# 写入SD卡（/dev/sdX替换为实际设备）
-sudo dd if=haos_rk3399-ubb-*.img of=/dev/sdX bs=4M status=progress
-sync
-```
-
-#### OTA升级
-1. 从Release页面下载 `.raucb` 升级包。
-2. 登录 `http://<设备IP>:4000` 后台管理页面。
-3. 在"系统更新"页面上传 `.raucb` 文件进行升级。
+> **注意**: ghcr.io（Home Assistant Core/Supervisor 镜像仓库）在国内没有免费公共镜像。ghcr.io 在中国大陆通常可直接访问（不受 GFW 影响），若下载慢建议使用宽带网络而非移动热点。
 
 ---
 
-## 开发与定制
+## 后台管理（4000 端口）
 
-### 覆盖机制说明
+`http://<设备IP>:4000` 提供 Web 后台管理界面，由 [LanSilence/assismgr](https://github.com/LanSilence/assismgr) 提供。
 
-- 官方源码作为子模块管理，自动同步最新代码。
-- 本地 haos-overlay 目录结构与官方源码一致，支持任意文件的定制与覆盖。
-- 编译流程自动应用本地修改，优先使用本地配置，无需直接改动官方源码。
-- 适配新开发板只需在 overlay 目录下按官方结构添加/修改配置文件。
-- 优先级：本地修改 > 官方配置
+### 功能列表
 
-### 适配新开发板
+- 📊 性能监控（CPU、内存、磁盘使用率）
+- 📋 日志查看（系统日志、服务器日志）
+- 🔄 系统更新（OTA raucb 上传升级）
+- 🔁 恢复出厂设置
+- ⚙️ 系统重启
+- 💡 指示灯控制
+- 🌐 网络状态检测
+- 📡 FRP 配置文件管理
+- ℹ️ 版本信息查看
 
-```bash
-# 以适配 new-board 为例
-mkdir -p haos-overlay/buildroot-external/board/hardkernel/new-board/
-touch haos-overlay/buildroot-external/configs/new-board_defconfig
-# 添加/修改配置文件
+### 技术架构
 
-# 一键编译
-./build.sh new-board
+```
+assismgr (Go 二进制, :4000 Web UI)
+    ├── 内部 WebSocket 实时推送 (/ws)
+    ├── MQTT 客户端 → Mosquitto broker (127.0.0.1:1883)
+    │   └── 使用 hamqtt 库发布 Home Assistant MQTT 自动发现
+    ├── 系统监控 (gopsutil: CPU/内存/磁盘)
+    └── USB 串口通信 (/dev/ttyGS, 可选)
 ```
 
----
+### MQTT 依赖
 
-## 上电开机与网络配置
+assismgr 集成了 [LanSilence/hamqtt](https://github.com/LanSilence/hamqtt) 作为 MQTT 客户端库，需要 MQTT broker 才能完整工作。在 HAOS 中：
 
-- 上电后需先配置网络。
-- RK3399-UBB 支持有线网络和WiFi，推荐优先使用有线网络。
+1. 打开 Supervisor → 加载项商店
+2. 搜索 "Mosquitto broker" 并安装
+3. 确保 Mosquitto 监听 `127.0.0.1:1883`
 
-### 配网方式
-
-1. **USB配网**（如支持USB串口）：
-   - 使用 Type-C 线连接电脑 USB 口。
-   - 打开串口终端（推荐 mobaxterm、winderm），波特率 1500000（RK3399默认）。
-   - 打开后输入：
-     ```
-     wifi -s <ssid> -p <passwd>
-     ```
-   - 连接成功后会显示获取到的 IP。
-
-2. **有线网络**：插入网线，设备自动获取IP地址。
-
-3. 电脑浏览器访问 `http://<ip>:4000` 进入管理后台。
-
-4. 建议重启后再访问 `http://<ip>:8123` 进入 Home Assistant 页面。
-
----
-
-## 后台管理功能
-
-- 性能监控
-- 日志查看
-- 系统更新
-- 恢复出厂设置
-- 系统重启
-- 指示灯控制
-- 网络升级包在线升级、支持升级打断
-- FRP 配置文件修改
-- 版本信息查看
-
-> 可将管理页面添加到 Home Assistant 导航栏，便于快速访问。
+> 即使未安装 Mosquitto，Web UI 仍可正常访问和使用，仅 MQTT 相关功能不可用。
 
 ---
 
 ## 指示灯说明
 
-- 指示灯常亮：系统正常启动
-- 指示灯快闪：未连接无线或者有线
-- 指示灯慢闪：无线或者有线已连接，但无网络
-- 指示灯心跳：网络连接正常
-- 指示灯长灭：人为关闭指示灯或者系统未启动
+| 状态 | 含义 |
+|------|------|
+| 常亮 | 系统正常启动 |
+| 快闪 | 未连接无线或有线网络 |
+| 慢闪 | 已连接网络但无互联网 |
+| 心跳 | 网络连接正常 |
+| 长灭 | 人为关闭或系统未启动 |
+
+---
+
+## 目录结构
+
+```
+haos-ace-rk3399-ubb/
+├── build.sh                        # 一键编译脚本
+├── .gitattributes                  # 强制 LF 换行（防止 Windows autocrlf 破坏 patch）
+├── .github/workflows/build.yaml    # GitHub Actions CI 配置
+├── scripts/
+│   ├── install_deb.sh              # assismgr 下载安装（含国内镜像加速）
+│   └── enter_local.sh              # 本地 Docker 构建封装
+├── haos-overlay/
+│   ├── Dockerfile                  # 构建容器镜像（含阿里云 APT 加速）
+│   └── buildroot-external/
+│       ├── configs/
+│       │   └── rk3399_ubb_defconfig  # Buildroot defconfig
+│       ├── board/hardkernel/rk3399-ubb/
+│       │   ├── meta                  # 板级元数据 (SUPERVISOR_MACHINE=qemuarm-64)
+│       │   ├── kernel.config         # 内核配置 (VOP/DRM/IOMMU/Watchdog)
+│       │   ├── kern-rk3399.config    # RK3399 基础内核配置
+│       │   ├── uboot.config          # U-Boot 配置
+│       │   ├── cmdline.txt           # 内核启动参数
+│       │   ├── uboot-boot.ush        # U-Boot 启动脚本
+│       │   ├── hassos-hook.sh        # 构建 hook
+│       │   ├── patches/
+│       │   │   ├── linux/0001-add-rk3399-ubb-dts.patch   # 内核 DTS
+│       │   │   └── uboot/0001-add-rk3399-ubb-u-boot.patch # U-Boot DTS
+│       │   └── rkbin/                # Rockchip 预编译二进制
+│       └── rootfs-overlay/
+│           ├── etc/
+│           │   ├── docker/daemon.json          # Docker 配置 (registry-mirrors)
+│           │   ├── NetworkManager/
+│           │   │   └── NetworkManager.conf     # 网络管理配置
+│           │   ├── systemd/
+│           │   │   ├── resolved.conf           # DNS 配置 (国内)
+│           │   │   ├── timesyncd.conf          # NTP 配置 (国内)
+│           │   │   └── journald.conf           # 日志持久化
+│           │   └── tmpfiles.d/                 # 临时文件/目录
+│           └── usr/lib/
+│               ├── firmware/brcm/              # BCM43455 WiFi/BT 固件
+│               └── systemd/system/
+│                   ├── haos-ensure-files.service
+│                   ├── haos-log-capture.service
+│                   └── NetworkManager-wait-online.service
+└── operating-system/                # 官方 HAOS 源码（git submodule）
+```
+
+---
+
+## 快速开始
+
+### 1. 环境准备 (Ubuntu 24.04+)
+
+- 推荐 Ubuntu 24.04+，需安装 `docker`、`git` 等常用工具。
+- 工程会自动下载和准备交叉编译工具链，无需手动配置。
+
+```bash
+# 下载代码（必须使用 --recurse-submodules）
+git clone --recurse-submodules https://github.com/LX0507/haos-ace-rk3399-ubb.git
+cd haos-ace-rk3399-ubb
+
+# 如果已克隆但忘记 --recurse-submodules：
+# git submodule update --init --recursive
+```
+
+#### Docker 安装
+
+```bash
+sudo apt update && sudo apt install apt-transport-https curl
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 将当前用户加入 docker 组
+sudo usermod -aG docker $USER
+newgrp docker
+docker info  # 验证
+```
+
+#### 常见本地构建问题
+
+| 错误 | 原因 | 解决方法 |
+|------|------|---------|
+| `operating-system/scripts/enter.sh: No such file` | submodule 未初始化 | `git submodule update --init --recursive` |
+| `permission denied: docker` | 用户不在 docker 组 | `sudo usermod -aG docker $USER` 重新登录 |
+| `cannot open /dev/loop0` | 缺少循环设备 | `sudo losetup -f` 或 `sudo mknod /dev/loop0 b 7 0` |
+| `cp: 无法通过符号链接` | resolv.conf 符号链接冲突 | 升级到最新代码 (`git pull`) |
+
+### 2. 一键编译
+
+```bash
+# 仅编译 RK3399-UBB
+./build.sh rk3399_ubb
+
+# 编译所有支持的平台
+./build.sh
+
+# 编译特定平台
+./build.sh tn3399_v3
+./build.sh k2b_h618
+```
+
+### 3. 产物说明
+
+编译完成后，产物位于 `output/images/`：
+
+| 文件 | 说明 |
+|------|------|
+| `haos_rk3399-ubb-<version>.img.xz` | 系统镜像（解压后烧录） |
+| `haos_rk3399-ubb-<version>.raucb` | OTA 升级包 |
+
+### 4. 烧录
+
+#### 烧录到 eMMC（推荐）
+
+```bash
+xz -d haos_rk3399-ubb-*.img.xz
+# 进入 Maskrom 模式后：
+rkdeveloptool db MiniLoaderAll.bin
+rkdeveloptool wl 0 haos_rk3399-ubb-*.img
+rkdeveloptool rd
+```
+
+#### 烧录到 SD 卡
+
+```bash
+xz -d haos_rk3399-ubb-*.img.xz
+sudo dd if=haos_rk3399-ubb-*.img of=/dev/sdX bs=4M status=progress
+sync
+```
+
+### 5. OTA 升级
+
+1. 从 [Release](https://github.com/LX0507/haos-ace-rk3399-ubb/releases) 下载 `.raucb`
+2. 登录 `http://<设备IP>:4000`（默认用户名 `admin`，密码 `123456`）
+3. 在"系统更新"页面上传升级
+
+---
+
+## 上电开机与配置
+
+### 首次启动流程
+
+1. **插入网线**（推荐）或等待 WiFi 扫描
+2. 设备自动通过 DHCP 获取 IP 地址
+3. 等待约 3-5 分钟（首次启动需拉取 Docker 镜像）
+4. 浏览器访问：
+   - `http://<设备IP>:4000` → 后台管理
+   - `http://<设备IP>:8123` → Home Assistant
+
+### 串口调试
+
+- **波特率**: 115200（BROM 阶段 1.5M，U-Boot/内核 115200）
+- **串口设备**: UART2 (ttyS2, GPIO 引脚)
+- **接线**: GND + TX + RX（3.3V TTL 电平）
+
+### 配网（USB 串口方式）
+
+使用 Type-C 线连接电脑 USB，打开串口终端（推荐 mobaxterm、winderm），输入：
+
+```
+wifi -s <SSID> -p <密码>
+```
+
+连接成功后显示获取到的 IP 地址。
 
 ---
 
 ## 常见问题
 
-### Q: 工程找不到工具链？
-A: 首次编译会自动下载并解压 toolchain，无需手动干预。
+### 网络相关
 
-### Q: 如何定制内核/U-Boot配置？
-A: 修改 `board/hardkernel/rk3399-ubb/kernel.config` 或 `uboot.config`，重新编译即可。
+**Q: 设备获取不到 IP 地址？**
+A: 检查网线连接，确认路由器 DHCP 服务正常。设备会在启动后持续重试 DHCP。
 
-### Q: 如何添加/修改分区布局？
-A: 修改 `board/hardkernel/rk3399-ubb/` 下的 `image-spl-spl.cfg` 和 `partition-spl-spl.cfg` 分区配置文件。
+**Q: 国内下载 HA Core 镜像很慢？**
+A: 镜像来自 `ghcr.io`，在中国大陆可直接访问但速度可能较慢。首次启动需等待 10-30 分钟。Docker Hub 镜像已配置国内加速。
 
-### Q: WiFi无法连接？
-A: 确认WiFi固件已正确放置在 `rootfs-overlay/usr/lib/firmware/brcm/` 目录，特别是板级特定NVRAM文件 `brcmfmac43455-sdio.keiiot,k019-cw43-dw.txt`。
+**Q: 无法访问 8123 端口？**
+A: 确认设备已获取 IP 地址（查看路由器 DHCP 列表或串口日志）。首次启动时 landingpage 在 8123 端口启动，但完整 HA Core 需要等待镜像下载完成。
 
-### Q: 蓝牙无法使用？
-A: 确认BT固件 `BCM4345C0.hcd` 已正确放置，且设备树中BT UART配置正确。
+**Q: DNS 解析失败？**
+A: 系统优先使用路由器 DHCP 提供的 DNS，后备 114.114.114.114 / 223.5.5.5 等国内 DNS。检查路由器是否阻断 UDP 53 出站。
 
-### Q: 如何定制根文件系统？
-A: 修改 `board/hardkernel/rk3399-ubb/rootfs-overlay/` 目录内容。
+### 系统相关
+
+**Q: 系统启动后 60 秒自动重启？**
+A: 已在 Build #17-18 修复。如仍出现，检查内核配置是否包含 `CONFIG_DW_WATCHDOG=y` 和 `watchdog.open_timeout=0`。
+
+**Q: HDMI 无显示？**
+A: 确认使用 Build #26 或更新版本。VOP 驱动已正确编译，HDMI 输出 HA CLI 字符界面。
+
+**Q: WiFi 无法连接？**
+A: BCM43455 使用 mainline `brcmfmac` 驱动，固件文件为 `brcmfmac43455-sdio.bin`。确认固件已正确放置。
+
+**Q: 如何定制内核/U-Boot 配置？**
+A: 修改 `haos-overlay/buildroot-external/board/hardkernel/rk3399-ubb/kernel.config` 或 `uboot.config`，重新编译即可。
+
+**Q: 如何打开串口控制台？**
+A: 波特率设为 115200（不是 1500000），接入 UART2 TX/RX/GND 引脚即可。
+
+**Q: 查看上次启动的日志？**
+A: 系统支持 pstore/ramoops（重启后 `/sys/fs/pstore/` 保留上次日志），以及 `haos-log-capture` 服务每 60 秒保存日志到 `/mnt/data/sos-logs/`。
+
+### 开发相关
+
+**Q: 适配新开发板？**
+```bash
+mkdir -p haos-overlay/buildroot-external/board/hardkernel/new-board/
+# 添加配置文件：meta, kernel.config, cmdline.txt, patches/, etc.
+./build.sh new-board
+```
+
+**Q: 编译时 patch 应用失败？**
+A: 检查 `.gitattributes` 确保 patch 文件使用 LF 换行（Windows 下 git autocrlf 可能转换）。patch hunk header 行数必须精确匹配。
 
 ---
 
-## 参考文档
+## 参考
 
-- 官方 Home Assistant OS 文档：https://developers.home-assistant.io/docs/hassio/
-- Rockchip RK3399 技术文档
-- 原项目：[twfjcn/haos-ace-tn3399-v3](https://github.com/twfjcn/haos-ace-tn3399-v3)
-- 上游项目：[LanSilence/haos-ace](https://github.com/LanSilence/haos-ace)
+- [Home Assistant OS 官方文档](https://developers.home-assistant.io/docs/hassio/)
+- [原项目 twfjcn/haos-ace-tn3399-v3](https://github.com/twfjcn/haos-ace-tn3399-v3)
+- [上游 LanSilence/haos-ace](https://github.com/LanSilence/haos-ace)
+- [assismgr 后台管理](https://github.com/LanSilence/assismgr)
+- [hamqtt MQTT 客户端库](https://github.com/LanSilence/hamqtt)
+- [Rockchip RK3399 技术文档](https://opensource.rock-chips.com/wiki_RK3399)
 
 ---
 
 ## 维护者
 
-- 本工程由 Home Assistant OS 社区爱好者维护
+- 本项目由 Home Assistant OS 社区爱好者维护
 - RK3399-UBB 适配由 [LX0507](https://github.com/LX0507) 完成
-- 如有问题请提交 issue 或 PR
+- 如有问题请提交 [Issue](https://github.com/LX0507/haos-ace-rk3399-ubb/issues) 或 PR
 
 ---
 
