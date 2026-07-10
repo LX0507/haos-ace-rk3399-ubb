@@ -4,8 +4,9 @@ FROM debian:bullseye
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Replace Debian APT sources with Aliyun mirror (China acceleration)
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list \
-    && sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
+# deb.debian.org and security.debian.org are slow/unreachable in China
+RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' /etc/apt/sources.list \
+    && sed -i 's|http://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list
 
 # Docker
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gpg-agent \
         gpg \
         dirmngr \
-        software-properties-common \    
+        software-properties-common \
         && curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/debian/gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/trusted.gpg.d/docker.gpg] \
         https://mirrors.aliyun.com/docker-ce/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
@@ -32,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         bzip2 \
         cpio \
+        curl \
         file \
         git \
         graphviz \
