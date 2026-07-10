@@ -13,11 +13,11 @@ new file mode 100644
 index 0000000..e8a1f7c2a
 --- /dev/null
 +++ b/arch/arm64/boot/dts/rockchip/rk3399-ubb.dts
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,718 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Device Tree for Rockchip RK3399 UBTECH Board Bingo
-+ * Adapted from TN3399-V3 DTS for HAOS Accelerated China Edition
++ * Mainline Linux Device Tree (no Android vendor remnants)
 + *
 + * Hardware: RK3399, 4GB LPDDR3, 32GB eMMC, BCM43455 WiFi/BT,
 + *           RK808 PMIC, HDMI 2.0, Gigabit Ethernet (RGMII)
@@ -31,7 +31,7 @@ index 0000000..e8a1f7c2a
 +
 +/ {
 +	model = "Rockchip RK3399 UBTECH Board Bingo";
-+	compatible = "ubtech,rk3399-ubb", "friendlyarm,nanopc-t4", "rockchip,rk3399";
++	compatible = "ubtech,rk3399-ubb", "rockchip,rk3399";
 +
 +	aliases {
 +		ethernet0 = &gmac;
@@ -160,90 +160,12 @@ index 0000000..e8a1f7c2a
 +		vin-supply = <&vcc3v3_sys>;
 +	};
 +
-+	vcc_wifi_en: regulator-vcc-wifi-en {
-+		compatible = "regulator-fixed";
-+		regulator-name = "vcc_wifi_en";
-+		regulator-always-on;
-+		regulator-boot-on;
-+		regulator-min-microvolt = <3300000>;
-+		regulator-max-microvolt = <3300000>;
-+	};
-+
 +	vcc5v0_host0: regulator-vcc5v0-host0 {
 +		compatible = "regulator-fixed";
 +		regulator-name = "vcc5v0_host0";
 +		regulator-always-on;
 +		regulator-boot-on;
 +		vin-supply = <&vcc5v0_sys>;
-+	};
-+
-+	vbus_typec: regulator-vbus-typec {
-+		compatible = "regulator-fixed";
-+		enable-active-high;
-+		gpio = <&gpio2 RK_PD6 GPIO_ACTIVE_HIGH>;
-+		pinctrl-names = "default";
-+		regulator-name = "vbus_typec";
-+		regulator-always-on;
-+		regulator-boot-on;
-+		regulator-min-microvolt = <5000000>;
-+		regulator-max-microvolt = <5000000>;
-+		vin-supply = <&vcc5v0_sys>;
-+	};
-+
-+	vcc5v0_host_usb3: regulator-vcc5v0-host-usb3 {
-+		compatible = "regulator-fixed";
-+		enable-active-high;
-+		gpio = <&gpio1 RK_PD0 GPIO_ACTIVE_HIGH>;
-+		pinctrl-names = "default";
-+		regulator-name = "vcc5v0_host_usb3";
-+		regulator-always-on;
-+	};
-+
-+	vcc5v0_usb2_1: regulator-vcc5v0-usb2-1 {
-+		compatible = "regulator-fixed";
-+		enable-active-high;
-+		gpio = <&gpio1 RK_PC2 GPIO_ACTIVE_HIGH>;
-+		pinctrl-names = "default";
-+		regulator-name = "vcc5v0_usb2_1";
-+		regulator-always-on;
-+		regulator-boot-on;
-+	};
-+
-+	vcc5v0_usb2_2: regulator-vcc5v0-usb2-2 {
-+		compatible = "regulator-fixed";
-+		enable-active-high;
-+		gpio = <&gpio1 RK_PD7 GPIO_ACTIVE_HIGH>;
-+		pinctrl-names = "default";
-+		regulator-name = "vcc5v0_usb2_2";
-+		regulator-always-on;
-+		regulator-boot-on;
-+	};
-+
-+	vcc5v0_usb3_1: regulator-vcc5v0-usb3-1 {
-+		compatible = "regulator-fixed";
-+		enable-active-high;
-+		gpio = <&gpio2 RK_PD4 GPIO_ACTIVE_HIGH>;
-+		pinctrl-names = "default";
-+		regulator-name = "vcc5v0_usb3_1";
-+		regulator-always-on;
-+		regulator-boot-on;
-+	};
-+
-+	vcc5v0_usb3_3: regulator-vcc5v0-usb3-3 {
-+		compatible = "regulator-fixed";
-+		enable-active-high;
-+		gpio = <&gpio2 RK_PD0 GPIO_ACTIVE_HIGH>;
-+		pinctrl-names = "default";
-+		regulator-name = "vcc5v0_usb3_3";
-+		regulator-always-on;
-+		regulator-boot-on;
-+	};
-+
-+	ir-receiver {
-+		compatible = "gpio-ir-receiver";
-+		gpios = <&gpio0 RK_PA6 GPIO_ACTIVE_LOW>;
-+		pinctrl-names = "default";
-+		pinctrl-0 = <&ir_rx>;
 +	};
 +
 +	gpio-keys {
@@ -612,12 +534,6 @@ index 0000000..e8a1f7c2a
 +		};
 +	};
 +
-+	ir {
-+		ir_rx: ir-rx {
-+			rockchip,pins = <0 RK_PA6 RK_FUNC_GPIO &pcfg_pull_none>;
-+		};
-+	};
-+
 +	leds {
 +		status_led_pin: status-led-pin {
 +			rockchip,pins = <0 RK_PD5 RK_FUNC_GPIO &pcfg_pull_none>;
@@ -699,15 +615,13 @@ index 0000000..e8a1f7c2a
 +	pinctrl-0 = <&sdio0_bus4 &sdio0_cmd &sdio0_clk>;
 +	#address-cells = <1>;
 +	#size-cells = <0>;
-+	vmmc-supply = <&vcc_wifi_en>;
++	vmmc-supply = <&vcc3v3_sys>;
 +	vqmmc-supply = <&vcc1v8_s3>;
 +	status = "okay";
 +
 +	brcmf: wifi@1 {
 +		compatible = "brcm,bcm43455-fmac";
 +		reg = <1>;
-+		brcm,board-type = "keiiot,k019-cw43-dw";
-+		brcm,feature-disable = <0x00>;
 +		interrupt-parent = <&gpio0>;
 +		interrupts = <RK_PA3 IRQ_TYPE_LEVEL_HIGH>;
 +		interrupt-names = "host-wake";
@@ -836,9 +750,18 @@ index 0000000..e8a1f7c2a
 +	status = "okay";
 +};
 +
-+&display_subsystem {
-+	status = "okay";
-+};
++/*
++ * NOTE: Do NOT add &display_subsystem { status = "okay"; } here.
++ * The "display_subsystem" label does NOT exist in mainline v6.12
++ * rk3399-base.dtsi. The display-subsystem node has no label prefix.
++ * The node is available by default (no status property = available).
++ * Reference: mainline rk3399-firefly.dts, rk3399-gru.dtsi, rk3399-tn3399-v3.dts
++ * none of them reference &display_subsystem.
++ *
++ * Adding &display_subsystem causes DTC to silently fail applying
++ * subsequent overrides (including &vopb/&vopl status="okay"),
++ * which results in "No available vop found" error.
++ */
 +
 +&vopb {
 +	status = "okay";
