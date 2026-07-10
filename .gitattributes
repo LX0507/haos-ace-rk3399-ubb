@@ -1,0 +1,11 @@
+# Ensure patch files and scripts always use LF line endings
+*.patch text eol=lf
+*.sh text eol=lf
+*.ush text eol=lf
+*.txt text eol=lf
+*.conf text eol=lf
+*.json text eol=lf
+*.config text eol=lf
+*.dts text eol=lf
+*.dtsi text eol=lf
+*.cfg text eol=lf

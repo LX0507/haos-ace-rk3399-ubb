@@ -94,11 +94,11 @@ new file mode 100644
 index 00000000..4d5e6f7a
 --- /dev/null
 +++ b/dts/upstream/src/arm64/rockchip/rk3399-ubb.dts
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,820 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Device Tree for Rockchip RK3399 UBTECH Board Bingo
-+ * Adapted from TN3399-V3 DTS for HAOS Accelerated China Edition
++ * Mainline Linux Device Tree (no Android vendor remnants)
 + *
 + * Hardware: RK3399, 4GB LPDDR3, 32GB eMMC, BCM43455 WiFi/BT,
 + *           RK808 PMIC, HDMI 2.0, Gigabit Ethernet (RGMII)
@@ -112,7 +112,7 @@ index 00000000..4d5e6f7a
 +
 +/ {
 +	model = "Rockchip RK3399 UBTECH Board Bingo";
-+	compatible = "ubtech,rk3399-ubb", "friendlyarm,nanopc-t4", "rockchip,rk3399";
++	compatible = "ubtech,rk3399-ubb", "rockchip,rk3399";
 +
 +	aliases {
 +		ethernet0 = &gmac;
@@ -749,8 +749,6 @@ index 00000000..4d5e6f7a
 +	max-frequency = <150000000>;
 +	bus-width = <8>;
 +	mmc-hs200-1_8v;
-+	mmc-hs400-1_8v;
-+	mmc-hs400-enhanced-strobe;
 +	non-removable;
 +	status = "okay";
 +};
@@ -767,7 +765,7 @@ index 00000000..4d5e6f7a
 +	pinctrl-0 = <&sdio0_bus4 &sdio0_cmd &sdio0_clk>;
 +	#address-cells = <1>;
 +	#size-cells = <0>;
-+	vmmc-supply = <&vcc_wifi_en>;
++	vmmc-supply = <&vcc3v3_sys>;
 +	vqmmc-supply = <&vcc1v8_s3>;
 +	status = "okay";
 +
