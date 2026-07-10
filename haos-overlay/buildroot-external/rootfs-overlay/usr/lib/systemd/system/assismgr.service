@@ -1,0 +1,19 @@
+
+[Unit]
+Description=Assistant Manager Service (HAOS)
+Documentation=https://github.com/LanSilence/assismgr
+After=network-online.target hassos-supervisor.service
+Wants=network-online.target
+
+[Service]
+User=root
+Type=simple
+WorkingDirectory=/usr/www/assismgr
+ExecStart=/usr/sbin/assismgr -s /usr/www/assismgr -c /etc/assismgr/HaPerfMonitor_config.json
+Restart=on-failure
+RestartSec=30s
+MemoryMax=200M
+TasksMax=100
+
+[Install]
+WantedBy=multi-user.target

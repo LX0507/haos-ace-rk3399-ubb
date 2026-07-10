@@ -1,10 +1,11 @@
-cache/
-haos-overlay/buildroot-external/rootfs-overlay/etc/assismgr/
-haos-overlay/buildroot-external/rootfs-overlay/usr/www/
-haos-overlay/buildroot-external/rootfs-overlay/usr/lib/systemd/system/multi-user.target.wants/assismgr.service
-haos-overlay/buildroot-external/rootfs-overlay/usr/lib/systemd/system/assismgr.service
-haos-overlay/buildroot-external/rootfs-overlay/usr/sbin/assismgr
 output
 build22_log.txt
 build22_logs.zip
 build22_logs/
+
+# cache/ 目录：保留 assismgr.deb 等 commit 进来的文件
+# 只忽略临时下载文件
+cache/*.tar.zst
+cache/*.tar.gz
+cache/*.tar.xz
+cache/*.tmp

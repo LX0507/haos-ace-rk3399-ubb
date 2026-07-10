@@ -1,0 +1,354 @@
+:root {
+    --primary-color: #2196F3;
+    --background: #1A1A1A;
+    --card-bg: #2D2D2D;
+    --text-primary: #FFFFFF;
+    --card-min-width: 480px;
+    --chart-height: 300px;
+    --card-padding: 25px;
+    --title-font-size: 1.5rem;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Roboto', sans-serif;
+    background-color: var(--background);
+    color: var(--text-primary);
+    padding: 20px;
+}
+
+/* 选项卡样式 */
+.tabs {
+    max-width: 1200px;
+    margin: 0 auto 20px;
+    border-bottom: 2px solid var(--card-bg);
+}
+
+.tab-btn {
+    background: none;
+    border: none;
+    padding: 12px 30px;
+    margin-right: 5px;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.3s;
+    border-radius: 8px 8px 0 0;
+}
+
+.tab-btn.active {
+    background: var(--card-bg);
+    color: var(--primary-color);
+    border-bottom: 3px solid var(--primary-color);
+}
+
+.dashboard {
+    display: grid;
+    max-width: 1200px;
+    margin: 0 auto;
+    grid-template-columns: 1fr;
+    gap: 30px;
+    padding: 0;
+}
+
+.card {
+    background: var(--card-bg);
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    padding: var(--card-padding);
+    display: none;
+}
+
+.card.active-tab {
+    display: block;
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.card-title {
+    color: var(--primary-color);
+    font-size: var(--title-font-size);
+    margin-bottom: 25px;
+}
+
+.netstatus-title {
+    color: #c1e65d;
+    font-size: var(--title-font-size);
+    margin-bottom: 20px;
+}
+
+.wifi-list {
+    list-style: none;
+    margin-top: 10px;
+}
+
+.wifi-item {
+    padding: 15px;
+    margin: 10px 0;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.3s;
+    position: relative;
+}
+
+.wifi-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.metric-chart {
+    margin-top: 15px;
+    height: var(--chart-height);
+}
+
+input[type="password"] {
+    width: 100%;
+    padding: 12px;
+    margin: 10px 0;
+    background: rgba(255, 255, 255, 0.1);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    font-size: 1rem;
+}
+
+button {
+    background: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: opacity 0.3s;
+}
+
+button:hover {
+    opacity: 0.8;
+}
+
+.wifi-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.ssid {
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.details {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+.signal::before {
+    content: "📶 ";
+}
+
+.encryption::before {
+    content: "🔒 ";
+}
+
+.input-container {
+    display: none;
+    position: relative;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 0 0 8px 8px;
+    margin-top: -5px;
+}
+
+.input-visible {
+    display: block;
+    animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 768px) {
+    :root {
+        --card-min-width: 100%;
+        --chart-height: 250px;
+        --card-padding: 20px;
+        --title-font-size: 1.3rem;
+    }
+    
+    .dashboard {
+        padding: 15px;
+    }
+    
+    .tab-btn {
+        padding: 10px 20px;
+        font-size: 1rem;
+    }
+}
+
+/* 高级功能卡片样式 */
+#advancedTab button {
+    margin: 10px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    background-color: #007bff;
+    color: white;
+}
+
+#advancedTab button:hover {
+    background-color: #0056b3;
+}
+
+.card-title-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.network-status-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.card-subtitle {
+    font-size: 0.95em;
+    opacity: 0.8;
+    position: relative;
+    padding-right: 8px;
+}
+
+/* 添加分隔线方案（二选一） */
+/* 方案1：文字分隔 */
+.card-subtitle::after {
+    content: "";
+    position: absolute;
+    right: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1px;
+    height: 60%;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* 方案2：增加间距 */
+.network-status-header {
+    margin-left: 25px;
+    padding-left: 25px;
+    position: relative;
+}
+.network-status-header::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1px;
+    height: 60%;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* 状态指示点优化 */
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #FF5252;
+    box-shadow: 0 0 8px rgba(255, 82, 82, 0.3);
+    transition: all 0.3s ease;
+}
+
+.status-dot.online {
+    background: #4CAF50;
+    box-shadow: 0 0 8px rgba(76, 175, 80, 0.3);
+}
+
+.status-info {
+    background-color: #e3f2fd;
+    color: #1565c0;
+    padding: 10px;
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+.status-success {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    padding: 10px;
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+.status-error {
+    background-color: #ffebee;
+    color: #c62828;
+    padding: 10px;
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+/* 上传表单美化 */
+#updateForm {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+#updateForm input[type="file"] {
+    padding: 6px 10px;
+    border: 1px solid var(--primary-color);
+    border-radius: 4px;
+    background: #f7fafd;
+    color: #333;
+    font-size: 15px;
+    font-family: inherit;
+}
+#updateForm input[type="file"]::-webkit-file-upload-button {
+    background: var(--primary-color);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 16px;
+    font-size: 15px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+#updateForm input[type="file"]::-webkit-file-upload-button:hover {
+    background: #1976D2;
+}
+#uploadProgress {
+    width: 180px;
+    height: 16px;
+    border-radius: 8px;
+    background: #e3f2fd;
+    color: var(--primary-color);
+    accent-color: var(--primary-color);
+}
+#uploadProgress::-webkit-progress-bar {
+    background-color: #e3f2fd;
+    border-radius: 8px;
+}
+#uploadProgress::-webkit-progress-value {
+    background-color: var(--primary-color);
+    border-radius: 8px;
+}
+#uploadProgress::-moz-progress-bar {
+    background-color: var(--primary-color);
+    border-radius: 8px;
+}

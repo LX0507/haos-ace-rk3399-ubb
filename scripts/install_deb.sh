@@ -1,104 +1,231 @@
 #!/bin/bash
-# assismgr + hamqtt 安装脚本
-# assismgr: 后台管理 Web UI (http://homeassistant.local:4000)
-# hamqtt:   MQTT 客户端库（已编译进 assismgr 二进制，无需单独安装）
+# assismgr 后台管理安装脚本
+# assismgr 提供 http://homeassistant.local:4000 Web UI
+# 来源: https://github.com/LanSilence/assismgr (集成 hamqtt MQTT 客户端库)
 #
-# MQTT 依赖: assismgr 连接 127.0.0.1:1883，需在 HAOS 中安装 Mosquitto addon
-# USB 串口: /dev/ttyGS 告警不影响 Web UI 正常使用
+# MQTT 依赖: 需 Supervisor 加载项商店安装 Mosquitto broker
+# USB 串口 /dev/ttyGS 告警不影响 Web UI 使用
+#
+# assismgr v0.1.8 arm64 deb 已 commit 到 cache/assismgr.deb
 
-# 不使用 set -e — assismgr 下载失败不应中断构建
-mkdir -p cache
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
-# ============================================================
-# GitHub 下载加速镜像（国内优先，失败回退官方源）
-# ============================================================
-GITHUB_MIRRORS=(
-  "https://gh.con.sh/https://github.com"
-  "https://ghproxy.com/https://github.com"
-  "https://github.com"
-)
+ASSISMGR_DEB="$REPO_ROOT/cache/assismgr.deb"
+ROOTFS="$REPO_ROOT/haos-overlay/buildroot-external/rootfs-overlay"
 
-# 检测可用的下载工具 (wget 总是可用, curl 可选)
-if command -v wget &>/dev/null; then
-  download_tool() { wget -q --timeout=30 --tries=2 -O "$2" "$1"; }
-  fetch_api()    { wget -qO- --timeout=15 --tries=1 "$1" 2>/dev/null; }
-elif command -v curl &>/dev/null; then
-  download_tool() { curl -sL --connect-timeout 15 -o "$2" "$1"; }
-  fetch_api()    { curl -sL --connect-timeout 15 "$1" 2>/dev/null; }
-else
-  echo "⚠️  无 wget/curl，跳过 assismgr 下载"
+if [ ! -f "$ASSISMGR_DEB" ] || [ ! -s "$ASSISMGR_DEB" ]; then
+  echo "⚠️  $ASSISMGR_DEB 不存在或为空，跳过 assismgr 安装"
   exit 0
 fi
 
-download_assismgr() {
-  local max_retries=3
-  local count=0
-
-  while [ $count -lt $max_retries ]; do
-    count=$((count+1))
-    echo "获取 assismgr 最新版本 (第 $count/$max_retries 次)..."
-
-    # 获取最新版本号（通过 GitHub API + 镜像加速）
-    local version=""
-    for mirror in "${GITHUB_MIRRORS[@]}"; do
-      local api_url="${mirror}/LanSilence/assismgr/releases/latest"
-      version=$(fetch_api "$api_url" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
-      if [ -n "$version" ]; then
-        echo "  最新版本: $version (via $(echo $mirror | cut -d/ -f3))"
-        break
-      fi
-    done
-
-    if [ -z "$version" ]; then
-      echo "  ⚠️ 无法获取版本号，等待 10s 后重试..."
-      sleep 10
-      continue
-    fi
-
-    local deb_name="assismgr_${version}_arm64.deb"
-    echo "  下载 $deb_name ..."
-
-    for mirror in "${GITHUB_MIRRORS[@]}"; do
-      local dl_url="${mirror}/LanSilence/assismgr/releases/download/${version}/${deb_name}"
-      echo "    尝试: $dl_url"
-      if download_tool "$dl_url" "cache/assismgr.deb" && [ -s "cache/assismgr.deb" ]; then
-        echo "  ✅ assismgr.deb 下载成功"
-        return 0
-      fi
-    done
-
-    echo "  ⚠️ 第 $count 次尝试失败，等待 10s 后重试..."
-    sleep 10
-  done
-
-  return 1
-}
-
 # ============================================================
-# 尝试下载 assismgr
-# 失败不中断构建 — 设备首次启动后仍可通过后台手动安装
+# 解包 deb（dpkg-deb 优先，ar+zstd 兜底，python 终极兜底）
 # ============================================================
-if [ -f cache/assismgr.deb ]; then
-  echo "📦 使用已缓存的 assismgr.deb"
-elif download_assismgr; then
-  echo "✅ assismgr 下载完成"
-else
-  echo "⚠️  assismgr.deb 下载失败（网络问题），跳过安装"
-  echo "   设备启动后可手动安装: dpkg -i assismgr_*.deb"
-  echo "✅ install_deb.sh 完成 (assismgr 未安装)"
-  exit 0
-fi
+echo "📦 解包 assismgr.deb 到 rootfs-overlay..."
 
-echo "解包 assismgr.deb 到 rootfs-overlay..."
-dpkg -x cache/assismgr.deb haos-overlay/buildroot-external/rootfs-overlay/
+mkdir -p "$ROOTFS"
 
-# 清理可能冲突的旧版残留
-for f in \
-  "haos-overlay/buildroot-external/rootfs-overlay/etc/assismgr"; do
-  if [ -e "$f" ] || [ -L "$f" ]; then
-    echo "清理旧残留: $f"
-    rm -rf "$f"
+if command -v dpkg-deb &>/dev/null; then
+  # Debian/Ubuntu 标准方式
+  dpkg-deb -x "$ASSISMGR_DEB" "$ROOTFS"
+elif command -v ar &>/dev/null && command -v zstd &>/dev/null; then
+  # 手动方式
+  TMPDIR=$(mktemp -d)
+  cd "$TMPDIR"
+  ar x "$ASSISMGR_DEB"
+  if [ -f data.tar.zst ]; then
+    tar --use-compress-program=unzstd -xf data.tar.zst -C "$ROOTFS"
+  elif [ -f data.tar.xz ]; then
+    tar -xJf data.tar.xz -C "$ROOTFS"
+  elif [ -f data.tar.gz ]; then
+    tar -xzf data.tar.gz -C "$ROOTFS"
+  else
+    cd "$REPO_ROOT"
+    rm -rf "$TMPDIR"
+    echo "❌ 未知 deb 格式（需要 dpkg-deb 或 ar+zstd）"
+    exit 1
   fi
-done
+  cd "$REPO_ROOT"
+  rm -rf "$TMPDIR"
+else
+  # Python 兜底（用环境变量传路径，避免 Bash 转义问题）
+  echo "🐍 使用 Python 兜底解包"
+  # 关键：Python 接收 Windows 路径需要 E:\ 格式，/e/ 在 Windows 中不存在
+  # 将 /e/Users/... 转换为 E:\Users\...
+  if command -v cygpath &>/dev/null; then
+    export ASSISMGR_DEB_PATH=$(cygpath -w "$ASSISMGR_DEB")
+    export ROOTFS_PATH=$(cygpath -w "$ROOTFS")
+  else
+    # fallback: 手动转换
+    WIN_DEB=$(echo "$ASSISMGR_DEB" | sed 's|^/e/|E:\\|; s|/|\\|g')
+    WIN_ROOTFS=$(echo "$ROOTFS" | sed 's|^/e/|E:\\|; s|/|\\|g')
+    export ASSISMGR_DEB_PATH="$WIN_DEB"
+    export ROOTFS_PATH="$WIN_ROOTFS"
+  fi
+  echo "   源: $ASSISMGR_DEB_PATH"
+  echo "   目标: $ROOTFS_PATH"
+  /c/Users/lenovo/.workbuddy/binaries/python/versions/3.13.12/python.exe - <<'PYEOF'
+import os, sys, io, struct, tarfile
 
-echo "✅ install_deb.sh 完成 (assismgr 已安装)"
+# 读取环境变量（避免 Windows 路径转义问题）
+DEB_PATH = os.environ['ASSISMGR_DEB_PATH']
+ROOTFS = os.environ['ROOTFS_PATH']
+PYTHONPATH_USER = os.environ.get('PYTHONPATH_USER', '')
+
+# 尝试加载 zstandard，否则手动解压
+try:
+    import zstandard
+    HAS_ZSTD = True
+except ImportError:
+    HAS_ZSTD = False
+    print("WARNING: zstandard not available, will use tar+system tools")
+
+if not os.path.exists(DEB_PATH):
+    print(f"ERROR: {DEB_PATH} not found")
+    sys.exit(1)
+
+with open(DEB_PATH, 'rb') as f:
+    data = f.read()
+
+# 解析 ar 格式
+pos = 8  # ar magic
+data_tar = None
+data_tar_format = None
+while pos < len(data):
+    if pos + 60 > len(data):
+        break
+    hdr = data[pos:pos+60]
+    name = hdr[:16].decode().strip()
+    size = int(hdr[48:58].decode().strip())
+    pos += 60
+    if name.startswith('data.tar'):
+        data_tar = data[pos:pos+size]
+        # 检测压缩格式
+        if data_tar[:4] == b'\x28\xb5\x2f\xfd':
+            data_tar_format = 'zstd'
+        elif data_tar[:6] == b'\xfd7zXZ\x00':
+            data_tar_format = 'xz'
+        elif data_tar[:2] == b'\x1f\x8b':
+            data_tar_format = 'gz'
+        break
+    pos += size
+    if pos % 2: pos += 1
+
+if not data_tar:
+    print("ERROR: data.tar not found in deb")
+    sys.exit(1)
+
+# 解压
+if data_tar_format == 'zstd':
+    if not HAS_ZSTD:
+        print("ERROR: zstd compressed but zstandard module not available")
+        sys.exit(1)
+    dctx = zstandard.ZstdDecompressor()
+    decompressed = dctx.decompress(data_tar, max_output_size=200*1024*1024)
+elif data_tar_format == 'xz':
+    import lzma
+    decompressed = lzma.decompress(data_tar)
+elif data_tar_format == 'gz':
+    import gzip
+    decompressed = gzip.decompress(data_tar)
+else:
+    decompressed = data_tar  # plain tar
+
+# 解压 tar 到 ROOTFS
+tar = tarfile.open(fileobj=io.BytesIO(decompressed))
+for m in tar.getmembers():
+    # 把 "./etc/..." 转换为 "etc/..."
+    rel_name = m.name.lstrip('./').lstrip('/')
+    if not rel_name or rel_name == '.':
+        continue
+    target = os.path.join(ROOTFS, rel_name.replace('/', os.sep))
+    if m.isdir():
+        os.makedirs(target, exist_ok=True)
+    elif m.isfile():
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        f = tar.extractfile(m)
+        if f is not None:
+            with open(target, 'wb') as out:
+                out.write(f.read())
+            if m.mode:
+                os.chmod(target, m.mode)
+            # 特殊：assismgr 二进制确保可执行
+            if rel_name == 'usr/sbin/assismgr' or rel_name.endswith('/assismgr'):
+                os.chmod(target, 0o755)
+    elif m.issym() or m.islnk():
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if os.path.lexists(target):
+            try:
+                os.remove(target)
+            except:
+                pass
+        if m.issym():
+            try:
+                os.symlink(m.linkname, target)
+            except (OSError, NotImplementedError) as e:
+                # Windows 可能无 symlink 权限，跳过（service 路径仍能找到）
+                print(f"   (skip symlink: {target} -> {m.linkname}: {e})")
+        # hardlinks 暂不处理（deb 中较少见）
+
+print(f"✅ assismgr 解包完成（{data_tar_format} 压缩格式，{len(tar.getmembers())} 个文件）")
+PYEOF
+fi
+
+# ============================================================
+# 修正 systemd service（适配 HAOS）
+# ============================================================
+ASSISMGR_SVC="$ROOTFS/usr/lib/systemd/system/assismgr.service"
+ASSISMGR_WANTS="$ROOTFS/usr/lib/systemd/system/multi-user.target.wants/assismgr.service"
+
+if [ -f "$ASSISMGR_SVC" ]; then
+  # HAOS 需要 service 在网络就绪后才启动
+  cat > "$ASSISMGR_SVC" <<'EOF'
+
+[Unit]
+Description=Assistant Manager Service (HAOS)
+Documentation=https://github.com/LanSilence/assismgr
+After=network-online.target hassos-supervisor.service
+Wants=network-online.target
+
+[Service]
+User=root
+Type=simple
+WorkingDirectory=/usr/www/assismgr
+ExecStart=/usr/sbin/assismgr -s /usr/www/assismgr -c /etc/assismgr/HaPerfMonitor_config.json
+Restart=on-failure
+RestartSec=30s
+MemoryMax=200M
+TasksMax=100
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # 确保 wants 链接存在
+  mkdir -p "$(dirname "$ASSISMGR_WANTS")"
+  ln -sf "../assismgr.service" "$ASSISMGR_WANTS"
+  echo "✅ assismgr.service 已修正（HAOS network-online 依赖）"
+fi
+
+# ============================================================
+# 验证关键文件
+# ============================================================
+if [ -f "$ROOTFS/usr/sbin/assismgr" ] && [ -x "$ROOTFS/usr/sbin/assismgr" ]; then
+  echo "✅ /usr/sbin/assismgr 已安装（可执行）"
+else
+  echo "❌ /usr/sbin/assismgr 未正确安装"
+  exit 1
+fi
+
+if [ -f "$ROOTFS/usr/lib/systemd/system/assismgr.service" ]; then
+  echo "✅ assismgr.service 已安装"
+fi
+
+if [ -f "$ROOTFS/etc/assismgr/HaPerfMonitor_config.json" ]; then
+  echo "✅ assismgr 配置文件已安装"
+fi
+
+echo "✅ install_deb.sh 完成 (assismgr 已集成到 rootfs)"

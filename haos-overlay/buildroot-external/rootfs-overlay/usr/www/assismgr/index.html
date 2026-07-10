@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统监控助手</title>
+    <link href="/static/css/fonts.css" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="/static/js/chart.js"></script>
+    <script src="/static/js/advance.js"></script>
+    <script src="/static/js/auth.js"></script>
+    <script src="/static/js/netstatus.js"></script>
+    <style>
+
+    </style>
+</head>
+<body>
+    <!-- 选项卡导航 -->
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('system')">系统监控</button>
+        <button class="tab-btn" onclick="switchTab('logs')">系统日志</button>
+        <button class="tab-btn" onclick="switchTab('advanced')">高级功能</button>
+        <button class="tab-btn" onclick="switchTab('sysConfig')">系统配置</button>
+        <button class="tab-btn" onclick="switchTab('usercenter')">用户中心</button>
+        <button class="tab-btn" onclick="switchTab('version')">版本信息</button>
+    </div>
+
+    <div class="dashboard">
+        <!-- 系统监控卡片 -->
+        <div class="card active-tab" id="systemTab">
+            <div class="card-title-container">
+                <h2 class="card-title">系统状态</h2>
+                <div class="network-status-header">
+                    <span class="netstatus-title">网络状态</span>
+                    <span id="onlineStatus" class="status-dot"></span>
+                </div>
+                <div class="status-item">
+                    <span class="netstatus-title">延迟：</span>
+                    <span id="latencyValue" class="value">-- ms</span>
+                </div>
+                <div class="status-item">
+                    <span class="netstatus-title">下行速度：</span>
+                    <span id="downloadSpeed" class="value">-- Mbps</span>
+                </div>
+                <div class="status-item">
+                    <span class="netstatus-title">上行速度：</span>
+                    <span id="uploadSpeed" class="value">-- Mbps</span>
+                </div>
+            </div>
+            <div class="metric-chart">
+                <canvas id="metricsChart"></canvas>
+            </div>
+        </div>
+
+            <!-- 系统日志卡片 -->
+        <div class="card" id="logsTab">
+            <h2 class="card-title">系统日志</h2>
+            <div class="log-container">
+                <pre id="logOutput"></pre> <!-- 用于显示日志内容 -->
+            </div>
+            <button onclick="getServiceLogs()">服务日志</button> <!-- 刷新日志按钮 -->
+            <button onclick="getSystemLogs()">系统日志</button> <!-- 刷新日志按钮 -->
+            <button onclick="delSystemLogs()">清除日志</button> <!-- 刷新日志按钮 -->
+        </div>
+           <!-- 高级功能卡片 -->
+        <div class="card" id="advancedTab">
+            <h2 class="card-title">高级功能</h2>
+            <div style="margin-bottom: 10px;">
+                <div style="display: flex; gap: 12px; margin-bottom: 8px;">
+                    <label style="display: flex; align-items: center; gap: 4px;">
+                        <input type="radio" name="updateMethod" value="file" checked onchange="toggleUpdateMethod()">
+                        本地文件
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 4px;">
+                        <input type="radio" name="updateMethod" value="url" onchange="toggleUpdateMethod()">
+                        网络URL
+                    </label>
+                </div>
+                <form id="updateForm" enctype="multipart/form-data" style="display: flex; align-items: center; gap: 12px;">
+                    <div id="fileUploadContainer">
+                        <input type="file" id="updateFile" name="updateFile" accept=".raucb,.img" required style="padding: 6px 10px; border: 1px solid #2196F3; border-radius: 4px; background: #f7fafd; color: #333; font-size: 15px; font-family: inherit;">
+                    </div>
+                    <div id="urlInputContainer" style="display: none;">
+                        <input type="url" id="updateUrl" name="updateUrl" placeholder="输入文件URL" style="padding: 6px 10px; border: 1px solid #2196F3; border-radius: 4px; background: #f7fafd; color: #333; font-size: 15px; font-family: inherit; width: 300px;">
+                    </div>
+                    <progress id="uploadProgress" value="0" max="100" style="width:180px; height: 16px; border-radius: 8px; background: #e3f2fd; color: #2196F3; display:none;"></progress>
+                    <button id="cancelUpgradeBtn" type="button" onclick="cancelUpgrade()" style="padding: 6px 12px; border: 1px solid #f44336; border-radius: 4px; background: #ffebee; color: #f44336; font-size: 15px; font-family: inherit; display:none;">取消升级</button>
+                </form>
+            </div>
+            <script>
+                function toggleUpdateMethod() {
+                    const method = document.querySelector('input[name="updateMethod"]:checked').value;
+                    document.getElementById('fileUploadContainer').style.display = method === 'file' ? 'block' : 'none';
+                    document.getElementById('urlInputContainer').style.display = method === 'url' ? 'block' : 'none';
+                    document.getElementById('updateFile').required = method === 'file';
+                }
+            </script>
+            <div id="updateStatus" style="margin: 10px 0; padding: 10px; border-radius: 4px; display: none;"></div>
+            <button onclick="updateSystem()">更新系统</button>
+            <button onclick="rebootSystem()">重启系统</button>
+            <button onclick="resetSystem()">恢复出厂设置</button>
+            <button id="ledButton" onclick="toggleLed()">加载指示灯状态...</button>
+        </div>
+        <div class="card" id="sysConfigTab">
+            <iframe src="/static/sysConfig.html" width="100%" height="500px" frameborder="0"></iframe>
+        </div>
+        <div class="card" id="usercenterTab">
+            <iframe src="/static/user.html" width="100%" height="500px" frameborder="0"></iframe>
+        </div>
+        <div class="card" id="versionTab">
+            <iframe src="/static/version.html" width="100%" height="500px" frameborder="0"></iframe>
+        </div>
+    </div>
+
+    <script>
+
+        const STATUS = {
+            ON: '开启指示灯',
+            OFF: '关闭指示灯'
+        };
+
+        // 初始化加载
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const response = await authFetch('/ledstatus', { method: 'GET' });
+                const data = await response.json();
+                updateButton(data.status);
+            } catch (error) {
+                console.log('初始化失败: ' + error.message);
+            }
+        });
+
+        // 切换指示灯
+        async function toggleLed() {
+            const button = document.getElementById('ledButton');
+            button.disabled = true;
+
+            try {
+                const currentStatus = button.textContent === STATUS.ON ? 'ON' : 'OFF';
+                const targetStatus = currentStatus;
+            
+                const response = await authFetch('/ledstatus', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ status: targetStatus })
+                });
+            
+                const result = await response.json();
+                updateButton(result.status);
+            } catch (error) {
+                showToast('状态切换失败: ' + error.message);
+                console.error('API Error:', error);
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        // 更新按钮状态
+        function updateButton(status) {
+            const button = document.getElementById('ledButton');
+            button.textContent = status === 'ON' ? STATUS.OFF : STATUS.ON ;
+            button.classList.toggle('active', status === 'ON');
+        }
+
+        // 初始化时获取指示灯状态
+        // window.onload = function() {
+        //     authFetch('/ledstatus')
+        //         .then(response => response.text())
+        //         .then(status => {
+        //             const button = document.getElementById('ledButton');
+        //             button.textContent = status === 'on' ? '开启指示灯' : '关闭指示灯';
+        //         });
+        // };
+
+        // 切换指示灯状态
+        function switchLed() {
+            const button = document.getElementById('ledButton');
+            const currentState = button.textContent === '开启指示灯' ? 'off' : 'on';
+            const targetState = currentState // 取反
+            try{
+                    authFetch('/ledstatus', {
+                    method: 'POST',
+                    body: targetState,
+                    headers: {
+                        'Content-Type': 'text/plain',
+                },
+                }).then(response => response.json)
+                .then(data => {
+                    console.log(data)
+                    button.textContent = data.status === 'ON' ?'关闭指示灯' :'开启指示灯';})
+
+
+
+                
+        } catch(error ) {
+            console.error('API Error:', error);
+        }
+        }
+        // 图表初始化
+        const ctx = document.getElementById('metricsChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'CPU 使用率',
+                    data: [],
+                    borderColor: '#4CAF50',
+                    tension: 0.1
+                }, {
+                    label: '内存使用率',
+                    data: [],
+                    borderColor: '#2196F3',
+                    tension: 0.1
+                }, {
+                    label: '磁盘使用率',
+                    data: [],
+                    borderColor: '#FF9800',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+
+        if (!localStorage.getItem('authToken')) {
+            document.write(''); 
+            window.location.replace('/login');
+            throw new Error('未授权访问'); // 终止代码执行
+        }
+        // WebSocket 连接
+        const ws = createAuthWebSocket('ws://' + window.location.host + '/ws');
+        let timestamps = [];
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            const now = new Date().toLocaleTimeString();
+            
+            timestamps.push(now);
+            if (timestamps.length > 60) timestamps.shift();
+            
+            chart.data.labels = timestamps;
+            
+            chart.data.datasets[0].data.push(data.cpu_usage);
+            chart.data.datasets[1].data.push(data.mem_usage);
+            chart.data.datasets[2].data.push(data.disk_usage);
+            
+            chart.data.datasets.forEach(dataset => {
+                if (dataset.data.length > 60) dataset.data.shift();
+            });
+            
+            chart.update();
+        };
+
+        // 页面加载时获取AP状态
+        window.addEventListener('DOMContentLoaded', (event) => {
+            updateAPButtonState();
+        });
+
+        // 更新按钮状态的函数
+        function updateAPButtonState() {
+            authFetch('/ap-status')
+                .then(response => response.json())
+                .then(data => {
+                    const button = document.getElementById('apToggleBtn');
+                    button.textContent = data.apRunning ? "关闭热点" : "打开热点";
+                });
+        }
+
+        // 切换热点状态的函数
+        function toggleAP() {
+            authFetch('/toggle-ap', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        updateAPButtonState(); // 更新按钮状态
+                        alert(data.message);
+                    } else {
+                        alert('操作失败: ' + (data.error || '未知错误'));
+                    }
+                });
+        }
+        // Wi-Fi 功能
+        let selectedSSID = '';
+
+        async function scanWifi() {
+            try {
+                const response = await authFetch('/scan');
+                if (!response.ok) throw new Error(`请求失败: ${response.status}`);
+                const data = await response.json();
+                if (!data.networks || !Array.isArray(data.networks)) throw new Error('无效的响应格式');
+                renderWifiList(data.networks);
+            } catch (error) {
+                console.error('Wi-Fi扫描失败:', error);
+                alert(`扫描失败: ${error.message}`);
+                renderWifiList([]);
+            }
+        }
+
+        function renderWifiList(networks) {
+            const list = document.getElementById('wifiList');
+            const safeNetworks = Array.isArray(networks) ? networks : [];
+            list.innerHTML = safeNetworks.map(network => `
+                <li class="wifi-item" onclick="selectSSID('${network.ssid || '未知网络'}', this)">
+                    <div class="wifi-info">
+                        <div class="ssid">${network.ssid || '未知网络'}</div>
+                        <div class="details">
+                            <span class="signal">信号: ${network.signal || '-100'}dBm</span>
+                            <span class="encryption">${network.flags?.join(' ') || '无加密信息'}</span>
+                        </div>
+                    </div>
+                </li>
+            `).join('');
+        }
+
+        function selectSSID(ssid, element) {
+            document.querySelectorAll('.input-container').forEach(container => {
+                container.classList.remove('input-visible');
+            });
+
+            let inputContainer = element.querySelector('.input-container');
+            if (!inputContainer) {
+                inputContainer = document.createElement('div');
+                inputContainer.className = 'input-container';
+                inputContainer.innerHTML = `
+                    <input type="password" 
+                           class="wifi-password" 
+                           placeholder="输入 ${ssid} 的密码"
+                           data-ssid="${ssid}" onclick="event.stopPropagation()">
+                    <button onclick="connectWifi(this);event.stopPropagation()">连接</button>
+                `;
+                element.appendChild(inputContainer);
+            }
+            if (inputContainer.style.display === 'block') {
+                inputContainer.style.display = 'none'; // 如果可见，则隐藏
+            } else {
+                // 隐藏其他所有输入容器
+                document.querySelectorAll('.input-container').forEach(container => {
+                    container.style.display = 'none';
+                });
+                inputContainer.style.display = 'block'; // 如果隐藏，则显示
+            }
+        }
+        function refreshLogs() {
+        // 这里可以替换为实际的日志获取逻辑
+            const logs = `[2023-10-01 12:00:00] 系统启动\n[2023-10-01 12:05:00] Wi-Fi 连接成功\n[2023-10-01 12:10:00] 系统运行正常`;
+            document.getElementById('logOutput').textContent = logs;
+        }
+
+        async function getServiceLogs() {
+        // 这里可以替换为实际的日志获取逻辑
+            try {
+            // 发送 GET 请求获取日志
+                const response = await authFetch('/serverlogs', {
+                    method: 'GET',
+                    headers: {'Content-Type': 'application/json'},
+                });
+            
+                // 检查响应状态
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+            
+                // 解析响应数据
+                const result = await response.json();
+            
+                // 显示日志内容
+                document.getElementById('logOutput').textContent = result.output;
+            } catch (error) {
+                console.error('获取日志失败:', error);
+                document.getElementById('logOutput').textContent = '获取日志失败，请稍后重试。';
+            }
+        }
+
+        async function getSystemLogs() {
+        // 这里可以替换为实际的日志获取逻辑
+            try {
+            // 发送 GET 请求获取日志
+                const response = await authFetch('/systemlogs', {
+                    method: 'GET',
+                    headers: {'Content-Type': 'application/json'},
+                });
+            
+                // 检查响应状态
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+            
+                // 解析响应数据
+                const result = await response.json();
+            
+                // 显示日志内容
+                document.getElementById('logOutput').textContent = result.output;
+            } catch (error) {
+                console.error('获取日志失败:', error);
+                document.getElementById('logOutput').textContent = '获取日志失败，请稍后重试。';
+            }
+        }
+
+
+        async function connectWifi(button) {
+            const container = button.parentElement;
+            const ssid = container.querySelector('input').dataset.ssid;
+            const password = container.querySelector('input').value;
+            
+            try {
+                const response = await authFetch('/connect', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(password)}`
+                });
+                const result = await response.json();
+                alert(result.status === "success" ? "连接成功！" : "连接失败：" + result.output);
+            } catch (error) {
+                console.error('连接错误:', error);
+                alert('连接过程中发生错误');
+            }
+        }
+
+        // 选项卡切换功能
+        function switchTab(tabId) {
+            document.querySelectorAll('.card').forEach(card => card.classList.remove('active-tab'));
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            
+            document.getElementById(`${tabId}Tab`).classList.add('active-tab');
+            event.currentTarget.classList.add('active');
+            
+            // 调整图表尺寸
+            setTimeout(() => chart.resize(), 100);
+        }
+    </script>
+</body>
+</html>
