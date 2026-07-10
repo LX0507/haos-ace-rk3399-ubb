@@ -187,7 +187,9 @@ if [ -f "$ASSISMGR_SVC" ]; then
 [Unit]
 Description=Assistant Manager Service (HAOS)
 Documentation=https://github.com/LanSilence/assismgr
-After=network-online.target hassos-supervisor.service
+# 只依赖网络就绪。assismgr 是独立 Go 二进制，连接 127.0.0.1:1883 MQTT，
+# 不应耦合 hassos-supervisor.service（否则 supervisor 启动慢/失败会拖垮 4000 端口）
+After=network-online.target
 Wants=network-online.target
 
 [Service]

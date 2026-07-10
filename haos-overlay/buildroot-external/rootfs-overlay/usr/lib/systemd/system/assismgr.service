@@ -2,7 +2,7 @@
 [Unit]
 Description=Assistant Manager Service (HAOS)
 Documentation=https://github.com/LanSilence/assismgr
-After=network-online.target hassos-supervisor.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
