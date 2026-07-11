@@ -1,20 +1,28 @@
 #!/bin/sh
 # HAOS-CN: 配置 hassio_dns 使用国内 DNS，禁用 CloudFlare DoT fallback
+#
+# 修复记录:
+#   Build #34: curl --unix-socket 调 supervisor API（缺 Authorization 头 → 401）
+#   Build #36: 加 nmcli 等待 + 重试
+#   Build #37: 加 NM dispatcher 双保险
+#   Build #38: 改用 ha CLI（内部已含 SUPERVISOR_TOKEN），避免 host 端拿 token
+#              增加 hassio_cli 容器 exec 兜底
+#
 # 可被 systemd service 调用，也可被 NetworkManager dispatcher 调用
 
 set -e
 
 SUPERVISOR_SOCK="/var/run/supervisor.sock"
-DNS_OPTIONS='{"servers": ["dns://223.5.5.5", "dns://119.29.29.29"], "fallback": false}'
-DNS_COREDNS_JSON='/mnt/data/supervisor/dns/coredns.json'
+DNS_SERVERS="223.5.5.5 119.29.29.29"
+DNS_COREDNS_JSON="/mnt/data/supervisor/dns/coredns.json"
 
 log() {
     echo "[hassos-dns-cn-init] $1"
     logger -t hassos-dns-cn-init "$1" 2>/dev/null || true
 }
 
-# 检查 supervisor API 是否可用
-wait_for_supervisor() {
+# 检查 supervisor.sock 是否就绪
+wait_for_supervisor_sock() {
     log "等待 supervisor.sock 就绪 ..."
     for i in $(seq 1 180); do
         [ -S "$SUPERVISOR_SOCK" ] && break
@@ -27,7 +35,22 @@ wait_for_supervisor() {
     return 0
 }
 
-# 检查 end0 是否已获取 IPv4（不依赖 ping，避免路由器禁 ICMP）
+# 检查 hassio_cli 容器是否启动（ha CLI 入口）
+wait_for_hassio_cli() {
+    log "等待 hassio_cli 容器就绪 ..."
+    for i in $(seq 1 180); do
+        if command -v docker >/dev/null 2>&1; then
+            if docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep -q true; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    log "WARNING: hassio_cli 容器 180s 内未就绪"
+    return 1
+}
+
+# 检查 end0 是否已获取 IPv4
 wait_for_ipv4() {
     log "等待 end0 获取 IPv4 ..."
     for i in $(seq 1 180); do
@@ -37,12 +60,9 @@ wait_for_ipv4() {
                 return 0
             fi
         else
-            # 备用：直接读 sysfs
-            if [ -f /sys/class/net/end0/operstate ] && [ "$(cat /sys/class/net/end0/operstate)" = "up" ]; then
-                if ip -4 addr show end0 2>/dev/null | grep -Eq 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/'; then
-                    log "end0 IPv4 已获取 (ip command)"
-                    return 0
-                fi
+            if ip -4 addr show end0 2>/dev/null | grep -Eq 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/'; then
+                log "end0 IPv4 已获取 (ip command)"
+                return 0
             fi
         fi
         sleep 1
@@ -51,12 +71,12 @@ wait_for_ipv4() {
     return 1
 }
 
-# 幂等检查：如已配置国内 DNS 则跳过
+# 幂等检查：通过 hassio_cli 容器调 ha dns info
 is_already_configured() {
-    if command -v jq >/dev/null 2>&1 && [ -S "$SUPERVISOR_SOCK" ]; then
-        CURRENT=$(curl -fsS -m 10 --unix-socket "$SUPERVISOR_SOCK" http://supervisor/dns/info 2>/dev/null | jq -r '.data.servers | join(",")' 2>/dev/null || true)
-        if echo "$CURRENT" | grep -q "223.5.5.5"; then
-            log "国内 DNS 已配置 (supervisor API)，跳过"
+    if command -v docker >/dev/null 2>&1; then
+        INFO=$(docker exec hassio_cli ha dns info 2>/dev/null || true)
+        if echo "$INFO" | grep -q "223.5.5.5"; then
+            log "国内 DNS 已配置 (hassio_cli ha dns info)，跳过"
             return 0
         fi
     fi
@@ -69,71 +89,134 @@ is_already_configured() {
     return 1
 }
 
-# 方案 A：通过 Supervisor API 配置 DNS
-configure_via_api() {
-    log "通过 Supervisor API 配置 DNS ..."
-    if curl -fsS -m 30 --retry 3 --retry-delay 5 \
-        --unix-socket "$SUPERVISOR_SOCK" \
-        -X POST -H "Content-Type: application/json" \
-        -d "$DNS_OPTIONS" \
-        http://supervisor/dns/options; then
-        log "DNS options 配置成功，重启 hassio_dns ..."
-        curl -fsS -m 30 --unix-socket "$SUPERVISOR_SOCK" -X POST http://supervisor/dns/restart || true
+# 方案 A：通过 ha CLI 配置 DNS（推荐，CLI 内部已处理 token）
+configure_via_ha_cli() {
+    log "通过 'ha dns' CLI 配置国内 DNS ..."
+    if ! command -v docker >/dev/null 2>&1; then
+        log "docker 命令不可用"
+        return 1
+    fi
+    if ! docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep -q true; then
+        log "hassio_cli 容器未运行"
+        return 1
+    fi
+
+    # 先禁用 fallback
+    if docker exec hassio_cli ha dns options --fallback=false 2>&1; then
+        log "fallback=false 设置成功"
+    else
+        log "WARNING: 禁用 fallback 失败"
+    fi
+
+    # 设置国内 DNS servers
+    local opts=""
+    for s in $DNS_SERVERS; do
+        opts="$opts --servers dns://$s"
+    done
+    if docker exec hassio_cli ha dns options $opts 2>&1; then
+        log "国内 DNS servers 设置成功"
+    else
+        log "WARNING: 设置 DNS servers 失败"
+        return 1
+    fi
+
+    # 重启 hassio_dns
+    if docker exec hassio_cli ha dns restart 2>&1; then
+        log "hassio_dns 重启成功"
+    else
+        log "WARNING: hassio_dns 重启失败"
+    fi
+    return 0
+}
+
+# 方案 B：通过 hassio_cli 容器 curl supervisor API（带 token）
+configure_via_hassio_cli_curl() {
+    log "通过 hassio_cli 容器 curl supervisor API ..."
+    if ! command -v docker >/dev/null 2>&1; then
+        return 1
+    fi
+    if ! docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep -q true; then
+        return 1
+    fi
+
+    # 在 hassio_cli 容器内执行 curl，自动获取 SUPERVISOR_TOKEN 环境变量
+    local body='{"servers":["dns://223.5.5.5","dns://119.29.29.29"],"fallback":false}'
+    if docker exec -e BODY="$body" hassio_cli sh -c 'curl -fsS -m 30 -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H "Content-Type: application/json" -d "$BODY" http://supervisor/dns/options' 2>&1; then
+        log "Supervisor API 配置成功"
+        docker exec hassio_cli curl -fsS -m 30 -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" http://supervisor/dns/restart 2>&1 || true
         return 0
     fi
     return 1
 }
 
-# 方案 B：直接修改 coredns.json 并重启 hassio_dns（API 不可用时的兜底）
+# 方案 C：直接修改 coredns.json + 写信号文件通知 supervisor
 configure_via_coredns_json() {
-    log "尝试直接修改 $DNS_COREDNS_JSON ..."
+    log "兜底方案：直接修改 $DNS_COREDNS_JSON ..."
     if [ ! -d "$(dirname "$DNS_COREDNS_JSON")" ]; then
         mkdir -p "$(dirname "$DNS_COREDNS_JSON")"
     fi
 
-    if [ -f "$DNS_COREDNS_JSON" ]; then
-        if command -v jq >/dev/null 2>&1; then
-            jq '.servers = ["dns://223.5.5.5", "dns://119.29.29.29"] | .fallback = false' "$DNS_COREDNS_JSON" > "${DNS_COREDNS_JSON}.tmp" && mv "${DNS_COREDNS_JSON}.tmp" "$DNS_COREDNS_JSON"
-        else
-            # 无 jq 时简单重写（风险：丢失其他字段，仅作兜底）
-            printf '%s\n' '{"servers":["dns://223.5.5.5","dns://119.29.29.29"],"fallback":false,"version":"2026.07.11"}' > "$DNS_COREDNS_JSON"
-        fi
+    if [ -f "$DNS_COREDNS_JSON" ] && command -v jq >/dev/null 2>&1; then
+        # 保留其他字段，仅修改 servers 和 fallback
+        jq '.servers = ["dns://223.5.5.5", "dns://119.29.29.29"] | .fallback = false' "$DNS_COREDNS_JSON" > "${DNS_COREDNS_JSON}.tmp" \
+            && mv "${DNS_COREDNS_JSON}.tmp" "$DNS_COREDNS_JSON"
     else
         printf '%s\n' '{"servers":["dns://223.5.5.5","dns://119.29.29.29"],"fallback":false,"version":"2026.07.11"}' > "$DNS_COREDNS_JSON"
     fi
 
-    if [ -S "$SUPERVISOR_SOCK" ]; then
-        log "已写入 coredns.json，尝试重启 hassio_dns ..."
-        curl -fsS -m 30 --unix-socket "$SUPERVISOR_SOCK" -X POST http://supervisor/dns/restart || true
+    log "coredns.json 已更新: $(cat $DNS_COREDNS_JSON 2>/dev/null)"
+
+    # 尝试通过 hassio_cli 重启 hassio_dns
+    if command -v docker >/dev/null 2>&1; then
+        if docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep -q true; then
+            docker exec hassio_cli ha dns restart 2>&1 || log "WARNING: 重启 hassio_dns 失败"
+        fi
     fi
     return 0
 }
 
 # 主流程
 main() {
-    log "启动 ..."
+    log "启动 (hassos-dns-cn-init)"
 
-    # dispatcher 调用时带 interface/action 参数，但这里统一处理
+    # dispatcher 调用时带 interface 参数
     if [ -n "$1" ] && [ "$1" != "end0" ] && [ "$1" != "--force" ]; then
         log "非 end0 接口 ($1)，跳过"
         exit 0
     fi
 
-    wait_for_supervisor || true
+    wait_for_supervisor_sock || true
     wait_for_ipv4 || true
+    wait_for_hassio_cli || true
 
     if is_already_configured; then
         exit 0
     fi
 
-    if configure_via_api; then
-        log "完成 (via Supervisor API)"
+    # 方案 A: ha CLI
+    if configure_via_ha_cli; then
+        log "完成 (via 'ha dns' CLI)"
+        # 验证最终状态
+        sleep 2
+        if command -v docker >/dev/null 2>&1; then
+            docker exec hassio_cli ha dns info 2>&1 | head -10 | while read line; do
+                log "  ha dns info: $line"
+            done
+        fi
         exit 0
     fi
 
-    log "WARNING: Supervisor API 配置失败，兜底写入 coredns.json ..."
+    # 方案 B: hassio_cli curl
+    if configure_via_hassio_cli_curl; then
+        log "完成 (via hassio_cli curl)"
+        exit 0
+    fi
+
+    # 方案 C: coredns.json 兜底
+    log "WARNING: 所有 API 方案失败，兜底写 coredns.json"
     configure_via_coredns_json
     log "完成 (via coredns.json fallback)"
+    log "用户可手动执行: ha dns options --fallback=false --servers dns://223.5.5.5 --servers dns://119.29.29.29"
 }
 
 main "$@"
