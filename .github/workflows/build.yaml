@@ -193,8 +193,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: output/images/haos*
-          tag_name: v17.3-${{ steps.date.outputs.DATE }}
-          name: "HAOS-ACE v17.3 (${{ steps.date.outputs.DATE }})"
+          tag_name: v17.3-${{ steps.date.outputs.DATE }}-${{ github.run_number }}
+          name: "HAOS-ACE v17.3 (Build ${{ github.run_number }})"
           body: |
             自动化构建的 HAOS 17.3 加速版镜像，包含以下文件：
             - haos*.img.xz  压缩烧写镜像
@@ -202,7 +202,9 @@ jobs:
 
             * HAOS 版本: 17.3
             * 构建日期: ${{ steps.date.outputs.DATE }}
+            * Build: ${{ github.run_number }}
             * Commit: ${{ github.sha }}
             * ccache: ${{ steps.ccache-cache.outputs.cache-hit == 'true' && '命中' || '未命中' }}
           draft: false
           prerelease: false
+          make_latest: true
