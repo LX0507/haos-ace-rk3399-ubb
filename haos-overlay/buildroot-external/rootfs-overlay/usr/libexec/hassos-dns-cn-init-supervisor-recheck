@@ -1,0 +1,47 @@
+#!/bin/sh
+# HAOS-CN: 强制 supervisor 重新检测网络连接
+# 解决 supervisor 启动时 DNS 未修好导致永久 'No Supervisor connectivity' 的问题
+
+set -e
+
+log() {
+    echo "[hassos-dns-cn-init-recheck] $1"
+    logger -t hassos-dns-cn-init-recheck "$1" 2>/dev/null || true
+}
+
+# 等待 hassio_cli 容器就绪
+for i in $(seq 1 60); do
+    if command -v docker >/dev/null 2>&1; then
+        if docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep -q true; then
+            break
+        fi
+    fi
+    sleep 1
+done
+
+if ! command -v docker >/dev/null 2>&1; then
+    log "docker 命令不可用"
+    exit 0
+fi
+if ! docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep -q true; then
+    log "hassio_cli 容器未就绪"
+    exit 0
+fi
+
+# 检查当前 supervisor 是否认为已联网
+CONNECTED=$(docker exec hassio_cli ha resolution info 2>/dev/null | grep -i "connected" | head -1 || true)
+if echo "$CONNECTED" | grep -qi "true"; then
+    log "supervisor 已联网 ($CONNECTED)，停止重试"
+    # 停掉本 timer
+    systemctl stop hassos-dns-cn-init-supervisor-recheck.timer 2>/dev/null || true
+    systemctl disable hassos-dns-cn-init-supervisor-recheck.timer 2>/dev/null || true
+    exit 0
+fi
+
+log "supervisor 仍未联网，触发 healthcheck + reload ..."
+docker exec hassio_cli ha resolution healthcheck 2>&1 | head -5 || true
+docker exec hassio_cli ha supervisor reload 2>&1 | head -5 || true
+sleep 3
+docker exec hassio_cli ha resolution healthcheck 2>&1 | head -5 || true
+log "完成（下一次 timer 触发时会再次重试）"
+exit 0

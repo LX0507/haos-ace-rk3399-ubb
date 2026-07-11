@@ -256,4 +256,21 @@ else
   echo "⚠️  $DNS_CN_SVC 不存在,跳过 wants 链接"
 fi
 
+# ============================================================
+# hassos-dns-cn-init-supervisor-recheck.timer
+# 持续重试 supervisor 网络检测，直到 'No Supervisor connectivity' 状态消除
+# 解决 supervisor 启动时 DNS 未修好导致永远不拉 HA Core 镜像的根因
+# ============================================================
+DNS_RECHECK_SVC="$ROOTFS/usr/lib/systemd/system/hassos-dns-cn-init-supervisor-recheck.service"
+DNS_RECHECK_TIMER="$ROOTFS/usr/lib/systemd/system/hassos-dns-cn-init-supervisor-recheck.timer"
+DNS_RECHECK_WANTS="$ROOTFS/usr/lib/systemd/system/timers.target.wants/hassos-dns-cn-init-supervisor-recheck.timer"
+mkdir -p "$ROOTFS/usr/lib/systemd/system/timers.target.wants"
+if [ -f "$DNS_RECHECK_SVC" ] && [ -f "$DNS_RECHECK_TIMER" ]; then
+  ln -sf "../hassos-dns-cn-init-supervisor-recheck.timer" "$DNS_RECHECK_WANTS" 2>/dev/null \
+    && echo "✅ hassos-dns-cn-init-supervisor-recheck.timer wants 链接已创建" \
+    || echo "⚠️  recheck timer wants 链接创建失败"
+else
+  echo "⚠️  recheck timer 文件缺失,跳过"
+fi
+
 echo "✅ install_deb.sh 完成 (assismgr 已集成到 rootfs)"

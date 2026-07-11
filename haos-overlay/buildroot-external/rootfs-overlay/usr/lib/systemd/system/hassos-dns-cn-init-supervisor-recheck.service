@@ -1,0 +1,10 @@
+[Unit]
+Description=HAOS-CN: Force supervisor connectivity recheck (loop until internet OK)
+Documentation=https://developers.home-assistant.io/docs/api/supervisor/endpoints
+# 每 5 分钟触发一次，直到 supervisor 真正检测到网络为止
+# 解决 supervisor 启动时 DNS 未修好导致永久 'No Supervisor connectivity' 的问题
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/hassos-dns-cn-init-supervisor-recheck
+# 不依赖 supervisor.sock；脚本内部等待

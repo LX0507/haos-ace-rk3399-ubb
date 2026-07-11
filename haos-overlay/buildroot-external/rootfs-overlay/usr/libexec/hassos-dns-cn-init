@@ -126,6 +126,16 @@ configure_via_ha_cli() {
     else
         log "WARNING: hassio_dns 重启失败"
     fi
+
+    # 关键：触发 supervisor 重新检测网络 + 拉 HA Core 镜像
+    # supervisor 启动时 DNS 未修好，被标记 'No Supervisor connectivity'，
+    # 永远不会下载 ghcr.io 上的 homeassistant 镜像 (8123 永远是 landingpage)
+    log "触发 supervisor 重新检测网络 (ha resolution healthcheck + ha supervisor reload) ..."
+    docker exec hassio_cli ha resolution healthcheck 2>&1 || log "WARNING: healthcheck 失败"
+    docker exec hassio_cli ha supervisor reload 2>&1 || log "WARNING: supervisor reload 失败"
+    sleep 3
+    # 再触发一次 healthcheck
+    docker exec hassio_cli ha resolution healthcheck 2>&1 || log "WARNING: 第二次 healthcheck 失败"
     return 0
 }
 
