@@ -111,16 +111,16 @@ jobs:
           # 注意：timeout 必须放在 sudo 内部，否则 sudo 不会转发 SIGTERM
           # timeout sudo apt-get → timeout 杀死 sudo 但 apt-get 继续跑
           # sudo timeout apt-get → timeout 在 root 下直接杀 apt-get
-          timeout 120 sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y || \
+          sudo timeout 120 DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y || \
             echo "⚠️ autoremove 超时或失败，继续执行"
-          timeout 120 sudo DEBIAN_FRONTEND=noninteractive apt-get clean -y || \
+          sudo timeout 120 DEBIAN_FRONTEND=noninteractive apt-get clean -y || \
             echo "⚠️ apt-get clean 超时或失败，继续执行"
 
           # 清理 Docker 镜像（如果有）
           timeout 60 docker system prune -af 2>/dev/null || true
 
           # 安装必要依赖（带超时保护）
-          timeout 180 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssl make gcc xz-utils || \
+          sudo timeout 180 DEBIAN_FRONTEND=noninteractive apt-get install -y openssl make gcc xz-utils || \
             echo "⚠️ 依赖安装超时或失败，继续执行"
 
           echo "===== 清理后磁盘状态 ====="
