@@ -18,6 +18,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120  # 总超时 2 小时，防止 runner 无限挂起
     permissions:
       contents: write
     strategy:
@@ -87,17 +88,38 @@ jobs:
           sudo timedatectl set-timezone "Asia/Shanghai"
           echo "===== 清理前磁盘状态 ====="
           df -h /
+
+          # 先杀掉可能持有 dpkg 锁的后台进程，避免 apt-get 无限等待
+          echo "检查 dpkg 锁状态 ..."
+          sudo fuser -v /var/lib/dpkg/lock-frontend 2>/dev/null && \
+            echo "dpkg 锁被占用，尝试杀掉锁持有者 ..." && \
+            sudo fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
+          sudo fuser -v /var/lib/apt/lists/lock 2>/dev/null && \
+            sudo fuser -k /var/lib/apt/lists/lock 2>/dev/null || true
+          sudo fuser -v /var/cache/apt/archives/lock 2>/dev/null && \
+            sudo fuser -k /var/cache/apt/archives/lock 2>/dev/null || true
+          # 杀掉可能的后台 apt 进程
+          sudo killall -9 apt-get dpkg apt unattended-upgrades 2>/dev/null || true
+          sleep 2
+
           # 激进清理：移除所有不必要的软件包和缓存
           sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/share/dotnet /usr/local/share/boost
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          # 清理 apt 缓存
-          sudo apt-get -qq autoremove --purge -y
-          sudo apt-get -qq clean -y
+
+          # 清理 apt 缓存（带超时保护，防止 dpkg 锁死）
+          timeout 120 sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y || \
+            echo "⚠️ autoremove 超时或失败，继续执行"
+          timeout 120 sudo DEBIAN_FRONTEND=noninteractive apt-get clean -y || \
+            echo "⚠️ apt-get clean 超时或失败，继续执行"
+
           # 清理 Docker 镜像（如果有）
-          docker system prune -af 2>/dev/null || true
-          # 安装必要依赖
-          sudo apt-get -qq install -y openssl make gcc xz-utils
+          timeout 60 docker system prune -af 2>/dev/null || true
+
+          # 安装必要依赖（带超时保护）
+          timeout 180 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y openssl make gcc xz-utils || \
+            echo "⚠️ 依赖安装超时或失败，继续执行"
+
           echo "===== 清理后磁盘状态 ====="
           df -h /
           echo "===== 缓存命中状态 ====="
