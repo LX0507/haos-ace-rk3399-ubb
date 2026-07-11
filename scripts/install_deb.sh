@@ -234,10 +234,11 @@ fi
 # hassos-dns-cn-init.service (HAOS 中国版 DNS 自动配置)
 # ============================================================
 # 解决 hassio_dns 默认 fallback=1.1.1.1:853 (CloudFlare DoT) 在国内
-# 网络环境被防火墙阻断的问题。第一次启动后通过 supervisor API 注入
+# 网络环境被防火墙阻断的问题。启动时通过 supervisor API 注入
 # 国内 DNS（阿里 223.5.5.5 + DNSPod 119.29.29.29）并禁用 fallback。
-# ConditionFirstBoot=yes 保证只执行一次（首次启动），用户后续可手动
-# 调整：ha dns options --servers dns://... --fallback=true
+# 依赖 network-online.target + hassos-supervisor.service，并在脚本内部
+# 循环等待 supervisor.sock 与 IPv4 网络就绪；失败后 systemd 自动重试。
+# 用户后续可手动调整：ha dns options --servers dns://... --fallback=true
 DNS_CN_SVC="$ROOTFS/usr/lib/systemd/system/hassos-dns-cn-init.service"
 DNS_CN_WANTS="$ROOTFS/usr/lib/systemd/system/multi-user.target.wants/hassos-dns-cn-init.service"
 

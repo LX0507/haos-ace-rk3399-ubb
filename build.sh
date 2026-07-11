@@ -146,6 +146,18 @@ fi
 echo "✅ overlay 合并完成"
 
 # ============================================================
+# 5.5 修正 rootfs-overlay 中脚本/服务的执行权限
+# rsync --no-perms 不会保留权限，此处显式恢复关键可执行文件
+# ============================================================
+echo "🔧 修正关键脚本权限 ..."
+chmod +x \
+    "operating-system/buildroot-external/rootfs-overlay/usr/libexec/hassos-dns-cn-init" \
+    "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-ensure-files" \
+    "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-log-capture" \
+    2>/dev/null || true
+echo "✅ 权限修正完成"
+
+# ============================================================
 # 6. 编译（按目标）
 # ============================================================
 

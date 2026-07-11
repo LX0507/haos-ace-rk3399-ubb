@@ -1,0 +1,55 @@
+#!/bin/sh
+# HAOS-CN: 首次启动时通过 Supervisor API 配置国内 DNS，禁用 CloudFlare DoT fallback
+# 依赖：network-online.target + hassos-supervisor.service
+
+set -e
+
+SUPERVISOR_SOCK="/var/run/supervisor.sock"
+DNS_OPTIONS='{"servers": ["dns://223.5.5.5", "dns://119.29.29.29"], "fallback": false}'
+
+echo "[hassos-dns-cn-init] 等待 supervisor.sock 就绪 ..."
+for i in $(seq 1 120); do
+    [ -S "$SUPERVISOR_SOCK" ] && break
+    sleep 1
+done
+if [ ! -S "$SUPERVISOR_SOCK" ]; then
+    echo "[hassos-dns-cn-init] ERROR: supervisor.sock 120s 内未就绪"
+    exit 1
+fi
+
+echo "[hassos-dns-cn-init] 等待 IPv4 网络可达 (ping 223.5.5.5) ..."
+for i in $(seq 1 120); do
+    if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1; then
+        echo "[hassos-dns-cn-init] 网络已可达"
+        break
+    fi
+    sleep 1
+done
+if ! ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1; then
+    echo "[hassos-dns-cn-init] WARNING: 120s 内网络仍不可达，继续尝试配置 ..."
+fi
+
+# 幂等检查：如果已经配置过国内 DNS 则跳过
+if command -v jq >/dev/null 2>&1; then
+    CURRENT_SERVERS=$(curl -fsS -m 10 --unix-socket "$SUPERVISOR_SOCK" http://supervisor/dns/info 2>/dev/null | jq -r '.data.servers | join(",")' 2>/dev/null || true)
+    if echo "$CURRENT_SERVERS" | grep -q "223.5.5.5"; then
+        echo "[hassos-dns-cn-init] 国内 DNS 已配置，跳过"
+        exit 0
+    fi
+fi
+
+echo "[hassos-dns-cn-init] 配置 hassio_dns 使用国内 DNS (223.5.5.5, 119.29.29.29) 并禁用 DoT fallback ..."
+if curl -fsS -m 30 --retry 5 --retry-delay 5 \
+    --unix-socket "$SUPERVISOR_SOCK" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$DNS_OPTIONS" \
+    http://supervisor/dns/options; then
+    echo "[hassos-dns-cn-init] DNS 配置成功，重启 hassio_dns ..."
+    curl -fsS -m 30 --unix-socket "$SUPERVISOR_SOCK" -X POST http://supervisor/dns/restart || true
+else
+    echo "[hassos-dns-cn-init] ERROR: 无法通过 Supervisor API 配置 DNS"
+    echo "[hassos-dns-cn-init] 可登录后手动执行: ha dns options --fallback=false --servers dns://223.5.5.5 --servers dns://119.29.29.29"
+    exit 1
+fi
+
+echo "[hassos-dns-cn-init] 完成"
