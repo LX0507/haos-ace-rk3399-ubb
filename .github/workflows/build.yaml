@@ -108,6 +108,9 @@ jobs:
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
 
           # 清理 apt 缓存（带超时保护，防止 dpkg 锁死）
+          # 注意：timeout 必须放在 sudo 内部，否则 sudo 不会转发 SIGTERM
+          # timeout sudo apt-get → timeout 杀死 sudo 但 apt-get 继续跑
+          # sudo timeout apt-get → timeout 在 root 下直接杀 apt-get
           timeout 120 sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y || \
             echo "⚠️ autoremove 超时或失败，继续执行"
           timeout 120 sudo DEBIAN_FRONTEND=noninteractive apt-get clean -y || \
