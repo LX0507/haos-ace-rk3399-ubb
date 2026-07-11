@@ -1,0 +1,26 @@
+[Unit]
+Description=HAOS-CN: Configure hassio_dns with Chinese DNS servers (disable CloudFlare DoT fallback)
+Documentation=https://developers.home-assistant.io/docs/api/supervisor/endpoints
+# 仅在 supervisor 启动成功后执行；supervisor 启动失败时本 service 会失败但不影响系统
+After=hassos-supervisor.service
+Wants=hassos-supervisor.service
+# 防止比 hassos-supervisor 启动时更早；1 分钟足够（supervisor 启动通常 30-90s）
+# 重启本机 1 次后由 ConditionFirstBoot=no 阻止重复执行
+ConditionFirstBoot=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 给 supervisor 充分时间初始化 D-Bus socket（unix:///var/run/supervisor.sock）
+ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do [ -S /var/run/supervisor.sock ] && break; sleep 1; done; [ -S /var/run/supervisor.sock ] || { echo "supervisor.sock not ready after 60s"; exit 1; }'
+# 通过 supervisor 内部 HTTP API（host 端无需 Authorization）配置 DNS：
+#   - servers: 阿里 + DNSPod（覆盖 UDP+TCP 53，避免 CloudFlare DoT 端口 853 被防火墙阻断）
+#   - fallback: false  → 禁用 1.1.1.1:853 CloudFlare DoT（国内环境常不可达）
+# 失败时 exit 0 不影响启动（用户可后续手动 'ha dns options --fallback=false' 修复）
+ExecStart=/bin/sh -c 'curl -fsS -m 30 --retry 3 --retry-delay 5 -X POST -H "Content-Type: application/json" -d '\''{"servers": ["dns://223.5.5.5", "dns://119.29.29.29"], "fallback": false}'\'' http://supervisor/dns/options && echo "hassio_dns configured: 223.5.5.5, 119.29.29.29 (fallback=off)" || echo "WARNING: failed to configure hassio_dns, run: ha dns options --fallback=false --servers dns://223.5.5.5"'
+# 重启 hassio_dns 容器使新 Corefile 生效
+ExecStartPost=/bin/sh -c 'curl -fsS -m 30 -X POST http://supervisor/dns/restart || true'
+TimeoutStartSec=180s
+
+[Install]
+WantedBy=multi-user.target

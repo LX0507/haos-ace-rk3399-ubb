@@ -230,4 +230,28 @@ if [ -f "$ROOTFS/etc/assismgr/HaPerfMonitor_config.json" ]; then
   echo "✅ assismgr 配置文件已安装"
 fi
 
+# ============================================================
+# hassos-dns-cn-init.service (HAOS 中国版 DNS 自动配置)
+# ============================================================
+# 解决 hassio_dns 默认 fallback=1.1.1.1:853 (CloudFlare DoT) 在国内
+# 网络环境被防火墙阻断的问题。第一次启动后通过 supervisor API 注入
+# 国内 DNS（阿里 223.5.5.5 + DNSPod 119.29.29.29）并禁用 fallback。
+# ConditionFirstBoot=yes 保证只执行一次（首次启动），用户后续可手动
+# 调整：ha dns options --servers dns://... --fallback=true
+DNS_CN_SVC="$ROOTFS/usr/lib/systemd/system/hassos-dns-cn-init.service"
+DNS_CN_WANTS="$ROOTFS/usr/lib/systemd/system/multi-user.target.wants/hassos-dns-cn-init.service"
+
+# 仅在仓库中尚未写入时创建（保持 install_deb.sh 幂等；service 文件本体
+# 由 git 跟踪的 rootfs-overlay/usr/lib/systemd/system/hassos-dns-cn-init.service
+# 提供，install_deb.sh 只确保 wants 软链接存在）
+mkdir -p "$(dirname "$DNS_CN_WANTS")"
+if [ -f "$DNS_CN_SVC" ]; then
+  # 优先用 ln -sf；Windows 主机 CI 不支持 symlink 时退化（CI 用 dpkg-deb 走 Linux 容器）
+  ln -sf "../hassos-dns-cn-init.service" "$DNS_CN_WANTS" 2>/dev/null \
+    && echo "✅ hassos-dns-cn-init.service wants 链接已创建" \
+    || echo "⚠️  hassos-dns-cn-init.service wants 链接创建失败 (Windows?), service 仍可通过 systemctl 手动启用"
+else
+  echo "⚠️  $DNS_CN_SVC 不存在,跳过 wants 链接"
+fi
+
 echo "✅ install_deb.sh 完成 (assismgr 已集成到 rootfs)"

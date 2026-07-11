@@ -1,20 +1,13 @@
 {
-  "log-driver": "journald",
-  "experimental": true,
-  "ip6tables": true,
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "live-restore": true,
-  "iptables": true,
-  "log-opts": {
-    "tag": "{{.Name}}"
-  },
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io",
-    "https://docker.mirrors.ustc.edu.cn",
-    "https://hub-mirror.c.163.com"
-  ],
-  "data-root": "/mnt/data/docker",
-  "deprecated-key-path": "/mnt/overlay/etc/docker/key.json",
-  "bip": "172.30.232.1/23",
-  "default-shm-size": "64m"
+    "log-driver": "journald",
+    "log-opts": {
+        "tag": "{{.Name}}"
+    },
+    "data-root": "/mnt/data/docker",
+    "bip": "172.30.232.1/23",
+    "registry-mirrors": [
+        "https://docker.m.daocloud.io",
+        "https://docker.mirrors.ustc.edu.cn",
+        "https://hub-mirror.c.163.com"
+    ]
 }
