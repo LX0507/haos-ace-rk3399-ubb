@@ -1,55 +1,139 @@
 #!/bin/sh
-# HAOS-CN: 首次启动时通过 Supervisor API 配置国内 DNS，禁用 CloudFlare DoT fallback
-# 依赖：network-online.target + hassos-supervisor.service
+# HAOS-CN: 配置 hassio_dns 使用国内 DNS，禁用 CloudFlare DoT fallback
+# 可被 systemd service 调用，也可被 NetworkManager dispatcher 调用
 
 set -e
 
 SUPERVISOR_SOCK="/var/run/supervisor.sock"
 DNS_OPTIONS='{"servers": ["dns://223.5.5.5", "dns://119.29.29.29"], "fallback": false}'
+DNS_COREDNS_JSON='/mnt/data/supervisor/dns/coredns.json'
 
-echo "[hassos-dns-cn-init] 等待 supervisor.sock 就绪 ..."
-for i in $(seq 1 120); do
-    [ -S "$SUPERVISOR_SOCK" ] && break
-    sleep 1
-done
-if [ ! -S "$SUPERVISOR_SOCK" ]; then
-    echo "[hassos-dns-cn-init] ERROR: supervisor.sock 120s 内未就绪"
-    exit 1
-fi
+log() {
+    echo "[hassos-dns-cn-init] $1"
+    logger -t hassos-dns-cn-init "$1" 2>/dev/null || true
+}
 
-echo "[hassos-dns-cn-init] 等待 IPv4 网络可达 (ping 223.5.5.5) ..."
-for i in $(seq 1 120); do
-    if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1; then
-        echo "[hassos-dns-cn-init] 网络已可达"
-        break
+# 检查 supervisor API 是否可用
+wait_for_supervisor() {
+    log "等待 supervisor.sock 就绪 ..."
+    for i in $(seq 1 180); do
+        [ -S "$SUPERVISOR_SOCK" ] && break
+        sleep 1
+    done
+    if [ ! -S "$SUPERVISOR_SOCK" ]; then
+        log "ERROR: supervisor.sock 180s 内未就绪"
+        return 1
     fi
-    sleep 1
-done
-if ! ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1; then
-    echo "[hassos-dns-cn-init] WARNING: 120s 内网络仍不可达，继续尝试配置 ..."
-fi
+    return 0
+}
 
-# 幂等检查：如果已经配置过国内 DNS 则跳过
-if command -v jq >/dev/null 2>&1; then
-    CURRENT_SERVERS=$(curl -fsS -m 10 --unix-socket "$SUPERVISOR_SOCK" http://supervisor/dns/info 2>/dev/null | jq -r '.data.servers | join(",")' 2>/dev/null || true)
-    if echo "$CURRENT_SERVERS" | grep -q "223.5.5.5"; then
-        echo "[hassos-dns-cn-init] 国内 DNS 已配置，跳过"
+# 检查 end0 是否已获取 IPv4（不依赖 ping，避免路由器禁 ICMP）
+wait_for_ipv4() {
+    log "等待 end0 获取 IPv4 ..."
+    for i in $(seq 1 180); do
+        if command -v nmcli >/dev/null 2>&1; then
+            if nmcli -g IP4.ADDRESS device show end0 2>/dev/null | grep -Eq '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'; then
+                log "end0 IPv4 已获取"
+                return 0
+            fi
+        else
+            # 备用：直接读 sysfs
+            if [ -f /sys/class/net/end0/operstate ] && [ "$(cat /sys/class/net/end0/operstate)" = "up" ]; then
+                if ip -4 addr show end0 2>/dev/null | grep -Eq 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/'; then
+                    log "end0 IPv4 已获取 (ip command)"
+                    return 0
+                fi
+            fi
+        fi
+        sleep 1
+    done
+    log "WARNING: 180s 内未检测到 end0 IPv4，继续尝试配置 ..."
+    return 1
+}
+
+# 幂等检查：如已配置国内 DNS 则跳过
+is_already_configured() {
+    if command -v jq >/dev/null 2>&1 && [ -S "$SUPERVISOR_SOCK" ]; then
+        CURRENT=$(curl -fsS -m 10 --unix-socket "$SUPERVISOR_SOCK" http://supervisor/dns/info 2>/dev/null | jq -r '.data.servers | join(",")' 2>/dev/null || true)
+        if echo "$CURRENT" | grep -q "223.5.5.5"; then
+            log "国内 DNS 已配置 (supervisor API)，跳过"
+            return 0
+        fi
+    fi
+    if [ -f "$DNS_COREDNS_JSON" ] && command -v jq >/dev/null 2>&1; then
+        if jq -e '.servers | index("dns://223.5.5.5")' "$DNS_COREDNS_JSON" >/dev/null 2>&1; then
+            log "国内 DNS 已配置 (coredns.json)，跳过"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 方案 A：通过 Supervisor API 配置 DNS
+configure_via_api() {
+    log "通过 Supervisor API 配置 DNS ..."
+    if curl -fsS -m 30 --retry 3 --retry-delay 5 \
+        --unix-socket "$SUPERVISOR_SOCK" \
+        -X POST -H "Content-Type: application/json" \
+        -d "$DNS_OPTIONS" \
+        http://supervisor/dns/options; then
+        log "DNS options 配置成功，重启 hassio_dns ..."
+        curl -fsS -m 30 --unix-socket "$SUPERVISOR_SOCK" -X POST http://supervisor/dns/restart || true
+        return 0
+    fi
+    return 1
+}
+
+# 方案 B：直接修改 coredns.json 并重启 hassio_dns（API 不可用时的兜底）
+configure_via_coredns_json() {
+    log "尝试直接修改 $DNS_COREDNS_JSON ..."
+    if [ ! -d "$(dirname "$DNS_COREDNS_JSON")" ]; then
+        mkdir -p "$(dirname "$DNS_COREDNS_JSON")"
+    fi
+
+    if [ -f "$DNS_COREDNS_JSON" ]; then
+        if command -v jq >/dev/null 2>&1; then
+            jq '.servers = ["dns://223.5.5.5", "dns://119.29.29.29"] | .fallback = false' "$DNS_COREDNS_JSON" > "${DNS_COREDNS_JSON}.tmp" && mv "${DNS_COREDNS_JSON}.tmp" "$DNS_COREDNS_JSON"
+        else
+            # 无 jq 时简单重写（风险：丢失其他字段，仅作兜底）
+            printf '%s\n' '{"servers":["dns://223.5.5.5","dns://119.29.29.29"],"fallback":false,"version":"2026.07.11"}' > "$DNS_COREDNS_JSON"
+        fi
+    else
+        printf '%s\n' '{"servers":["dns://223.5.5.5","dns://119.29.29.29"],"fallback":false,"version":"2026.07.11"}' > "$DNS_COREDNS_JSON"
+    fi
+
+    if [ -S "$SUPERVISOR_SOCK" ]; then
+        log "已写入 coredns.json，尝试重启 hassio_dns ..."
+        curl -fsS -m 30 --unix-socket "$SUPERVISOR_SOCK" -X POST http://supervisor/dns/restart || true
+    fi
+    return 0
+}
+
+# 主流程
+main() {
+    log "启动 ..."
+
+    # dispatcher 调用时带 interface/action 参数，但这里统一处理
+    if [ -n "$1" ] && [ "$1" != "end0" ] && [ "$1" != "--force" ]; then
+        log "非 end0 接口 ($1)，跳过"
         exit 0
     fi
-fi
 
-echo "[hassos-dns-cn-init] 配置 hassio_dns 使用国内 DNS (223.5.5.5, 119.29.29.29) 并禁用 DoT fallback ..."
-if curl -fsS -m 30 --retry 5 --retry-delay 5 \
-    --unix-socket "$SUPERVISOR_SOCK" \
-    -X POST -H "Content-Type: application/json" \
-    -d "$DNS_OPTIONS" \
-    http://supervisor/dns/options; then
-    echo "[hassos-dns-cn-init] DNS 配置成功，重启 hassio_dns ..."
-    curl -fsS -m 30 --unix-socket "$SUPERVISOR_SOCK" -X POST http://supervisor/dns/restart || true
-else
-    echo "[hassos-dns-cn-init] ERROR: 无法通过 Supervisor API 配置 DNS"
-    echo "[hassos-dns-cn-init] 可登录后手动执行: ha dns options --fallback=false --servers dns://223.5.5.5 --servers dns://119.29.29.29"
-    exit 1
-fi
+    wait_for_supervisor || true
+    wait_for_ipv4 || true
 
-echo "[hassos-dns-cn-init] 完成"
+    if is_already_configured; then
+        exit 0
+    fi
+
+    if configure_via_api; then
+        log "完成 (via Supervisor API)"
+        exit 0
+    fi
+
+    log "WARNING: Supervisor API 配置失败，兜底写入 coredns.json ..."
+    configure_via_coredns_json
+    log "完成 (via coredns.json fallback)"
+}
+
+main "$@"

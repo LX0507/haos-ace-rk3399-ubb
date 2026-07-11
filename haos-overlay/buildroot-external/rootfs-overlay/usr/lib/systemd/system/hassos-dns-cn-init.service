@@ -1,17 +1,17 @@
 [Unit]
 Description=HAOS-CN: Configure hassio_dns with Chinese DNS servers (disable CloudFlare DoT fallback)
 Documentation=https://developers.home-assistant.io/docs/api/supervisor/endpoints
-# 必须等网络就绪 + supervisor 启动完成。Build #34 缺少 network-online.target，
-# 导致 64s 本服务启动时 supervisor.sock 刚创建但 IPv4 尚未获取，curl 失败。
-After=network-online.target hassos-supervisor.service
-Wants=network-online.target hassos-supervisor.service
+# 不依赖 network-online.target：日志显示 NetworkManager-wait-online.service 可能失败，
+# 导致 target 不可靠。脚本内部自行轮询 supervisor.sock 与 end0 IPv4。
+After=hassos-supervisor.service
+Wants=hassos-supervisor.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/hassos-dns-cn-init
-# 脚本内部最多等 240s (120s supervisor + 120s 网络)，留出余量
-TimeoutStartSec=300s
+# 脚本内部最多等 360s (180s supervisor + 180s IPv4)，留出余量
+TimeoutStartSec=400s
 # 失败时重试：DHCP 可能多次超时（如交换机 STP），supervisor 也可能晚于本服务启动
 Restart=on-failure
 RestartSec=30s

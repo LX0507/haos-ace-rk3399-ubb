@@ -13,3 +13,6 @@
 *.timer text eol=lf
 *.mount text eol=lf
 
+# NetworkManager dispatcher scripts have no extension
+dispatcher.d/* text eol=lf
+

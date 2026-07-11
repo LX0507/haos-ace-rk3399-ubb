@@ -152,6 +152,7 @@ echo "✅ overlay 合并完成"
 echo "🔧 修正关键脚本权限 ..."
 chmod +x \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/hassos-dns-cn-init" \
+    "operating-system/buildroot-external/rootfs-overlay/etc/NetworkManager/dispatcher.d/99-hassos-dns-cn"
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-ensure-files" \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-log-capture" \
     2>/dev/null || true

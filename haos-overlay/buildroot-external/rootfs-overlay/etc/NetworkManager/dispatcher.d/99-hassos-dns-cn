@@ -1,0 +1,15 @@
+#!/bin/sh
+# NetworkManager dispatcher: end0 连接 up 时触发国内 DNS 配置
+# 作为 hassos-dns-cn-init.service 的双保险：service 失败后，dispatcher 仍会在
+# 网络恢复时尝试重新配置。
+
+INTERFACE="$1"
+ACTION="$2"
+
+[ "$INTERFACE" = "end0" ] || exit 0
+[ "$ACTION" = "up" ] || [ "$ACTION" = "dhcp4-change" ] || exit 0
+
+# 后台执行，避免阻塞 NM dispatcher
+/usr/libexec/hassos-dns-cn-init end0 &
+
+exit 0
