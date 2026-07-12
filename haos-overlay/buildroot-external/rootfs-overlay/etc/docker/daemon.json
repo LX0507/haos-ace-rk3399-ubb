@@ -7,6 +7,8 @@
     "bip": "172.30.232.1/23",
     "registry-mirrors": [
         "https://docker.m.daocloud.io",
+        "https://docker.1ms.run",
+        "https://docker.1panel.live",
         "https://docker.mirrors.ustc.edu.cn",
         "https://hub-mirror.c.163.com"
     ]
