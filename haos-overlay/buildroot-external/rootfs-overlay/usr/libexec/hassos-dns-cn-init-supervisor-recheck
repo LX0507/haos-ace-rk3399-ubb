@@ -9,6 +9,21 @@ log() {
     logger -t hassos-dns-cn-init-recheck "$1" 2>/dev/null || true
 }
 
+# 配置 host DNS，确保 hassio_dns 的 locals 不是路由器慢 DNS
+configure_host_dns() {
+    local dns_servers="223.5.5.5 119.29.29.29"
+    if command -v resolvectl >/dev/null 2>&1; then
+        resolvectl dns end0 $dns_servers 2>/dev/null || true
+    fi
+    if command -v nmcli >/dev/null 2>&1; then
+        local conn_name=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ':end0$' | cut -d: -f1 | head -1)
+        if [ -n "$conn_name" ]; then
+            nmcli connection modify "$conn_name" ipv4.dns "$dns_servers" ipv4.ignore-auto-dns yes 2>/dev/null || true
+            nmcli connection modify "$conn_name" ipv6.ignore-auto-dns yes 2>/dev/null || true
+        fi
+    fi
+}
+
 # 等待 hassio_cli 容器就绪
 for i in $(seq 1 60); do
     if command -v docker >/dev/null 2>&1; then
@@ -27,6 +42,8 @@ if ! docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep 
     log "hassio_cli 容器未就绪"
     exit 0
 fi
+
+configure_host_dns
 
 # 检查当前 supervisor 是否认为已联网
 CONNECTED=$(docker exec hassio_cli ha resolution info 2>/dev/null | grep -i "connected" | head -1 || true)

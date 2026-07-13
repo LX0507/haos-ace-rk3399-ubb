@@ -21,6 +21,41 @@ log() {
     logger -t hassos-dns-cn-init "$1" 2>/dev/null || true
 }
 
+# 配置 host DNS (systemd-resolved + NetworkManager)
+# 关键：hassio_dns 的 locals 会从 host DNS 读取；host DNS 快则容器 DNS 也快
+configure_host_dns() {
+    log "配置 host DNS ..."
+    local dns_servers="223.5.5.5 119.29.29.29"
+
+    # 方法1: 使用 resolvectl 设置 per-interface DNS（立即生效）
+    if command -v resolvectl >/dev/null 2>&1; then
+        if resolvectl dns end0 $dns_servers 2>/dev/null; then
+            log "resolvectl 设置 end0 DNS 成功"
+        else
+            log "WARNING: resolvectl 设置 end0 DNS 失败"
+        fi
+    fi
+
+    # 方法2: 使用 nmcli 修改当前连接（持久化）
+    if command -v nmcli >/dev/null 2>&1; then
+        local conn_name=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ':end0$' | cut -d: -f1 | head -1)
+        if [ -n "$conn_name" ]; then
+            if nmcli connection modify "$conn_name" ipv4.dns "$dns_servers" ipv4.ignore-auto-dns yes 2>/dev/null; then
+                log "nmcli 修改连接 $conn_name IPv4 DNS 成功"
+            else
+                log "WARNING: nmcli 修改连接 $conn_name IPv4 DNS 失败"
+            fi
+            if nmcli connection modify "$conn_name" ipv6.ignore-auto-dns yes 2>/dev/null; then
+                log "nmcli 禁用 $conn_name IPv6 auto DNS 成功"
+            else
+                log "WARNING: nmcli 禁用 $conn_name IPv6 auto DNS 失败"
+            fi
+        else
+            log "WARNING: 未找到 end0 的活动连接"
+        fi
+    fi
+}
+
 # 检查 supervisor.sock 是否就绪
 wait_for_supervisor_sock() {
     log "等待 supervisor.sock 就绪 ..."
@@ -120,12 +155,23 @@ configure_via_ha_cli() {
         return 1
     fi
 
-    # 重启 hassio_dns
-    if docker exec hassio_cli ha dns restart 2>&1; then
-        log "hassio_dns 重启成功"
-    else
-        log "WARNING: hassio_dns 重启失败"
+    # 重启 hassio_dns（带重试，避免 "Another job is running"）
+    local restart_ok=0
+    for i in $(seq 1 10); do
+        if docker exec hassio_cli ha dns restart 2>&1; then
+            log "hassio_dns 重启成功"
+            restart_ok=1
+            break
+        fi
+        log "WARNING: hassio_dns 重启失败，5s 后重试 ($i/10) ..."
+        sleep 5
+    done
+    if [ "$restart_ok" -ne 1 ]; then
+        log "WARNING: hassio_dns 经过 10 次重试仍无法重启"
     fi
+
+    # 关键：配置 host DNS，让 hassio_dns 的 locals 也变成国内 DNS
+    configure_host_dns
 
     # 关键：触发 supervisor 重新检测网络 + 拉 HA Core 镜像
     # supervisor 启动时 DNS 未修好，被标记 'No Supervisor connectivity'，
@@ -194,6 +240,9 @@ main() {
         log "非 end0 接口 ($1)，跳过"
         exit 0
     fi
+
+    # 先配置 host DNS（无需等待 supervisor），让系统 / dockerd 尽早使用国内 DNS
+    configure_host_dns
 
     wait_for_supervisor_sock || true
     wait_for_ipv4 || true
