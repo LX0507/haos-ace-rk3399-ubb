@@ -155,6 +155,11 @@ configure_via_ha_cli() {
         return 1
     fi
 
+    # 关键：先配置 host DNS，再重启 hassio_dns
+    # 这样 hassio_dns 重启时会读取新 locals (223.5.5.5/119.29.29.29)，而非路由器慢 DNS
+    # 注意：若 host DNS 配置失败，hassio_dns 重启后 locals 仍为 192.168.1.1 → 修复无效
+    configure_host_dns
+
     # 重启 hassio_dns（带重试，避免 "Another job is running"）
     local restart_ok=0
     for i in $(seq 1 10); do
@@ -169,9 +174,6 @@ configure_via_ha_cli() {
     if [ "$restart_ok" -ne 1 ]; then
         log "WARNING: hassio_dns 经过 10 次重试仍无法重启"
     fi
-
-    # 关键：配置 host DNS，让 hassio_dns 的 locals 也变成国内 DNS
-    configure_host_dns
 
     # 关键：触发 supervisor 重新检测网络 + 拉 HA Core 镜像
     # supervisor 启动时 DNS 未修好，被标记 'No Supervisor connectivity'，
