@@ -124,6 +124,48 @@ is_already_configured() {
     return 1
 }
 
+# 修复 CoreDNS JSON 中的 Cloudflare DoT fallback
+# Cloudflare DoT (1.1.1.1:853, 1.0.0.1:853) 在国内被封，导致 CoreDNS .:5553 端口超时
+# supervisor 的 CoreDNS 模板始终包含 Cloudflare DoT forward 作为 5553 端口上游，
+# ha dns options 只改端口 53 的 forward，不动端口 5553
+# 需要直接修改生成的 coredns.json，替换所有 Cloudflare 端点为国内 DNS
+fix_coredns_dot_fallback() {
+    local coredns_json="/mnt/data/supervisor/dns/coredns.json"
+    if [ ! -f "$coredns_json" ]; then
+        log "coredns.json 不存在，跳过 DoT 修复"
+        return 1
+    fi
+
+    # 检查是否包含 Cloudflare DoT 端点
+    if ! grep -qE '1\.1\.1\.1|1\.0\.0\.1|cloudflare' "$coredns_json" 2>/dev/null; then
+        log "coredns.json 不含 Cloudflare 端点，无需替换 DoT"
+        return 0
+    fi
+
+    log "检测到 Cloudflare DoT fallback，替换为国内 DNS（223.5.5.5 / 119.29.29.29）..."
+
+    # 备份
+    cp "$coredns_json" "${coredns_json}.bak" 2>/dev/null || true
+
+    # 替换 tls://1.1.1.1 → dns://223.5.5.5
+    # 替换 tls://1.0.0.1 → dns://119.29.29.29
+    # 这是关键：CoreDNS .:5553 用 Cloudflare DoT 作上游，国内被封
+    sed -i \
+        -e 's|tls://1\.1\.1\.1|dns://223.5.5.5|g' \
+        -e 's|tls://1\.0\.0\.1|dns://119.29.29.29|g' \
+        -e 's|tls://1\.1\.1\.2|dns://223.5.5.5|g' \
+        -e 's|tls://1\.0\.0\.2|dns://119.29.29.29|g' \
+        -e 's|tls://cloudflare-dns\.com|dns://223.5.5.5|g' \
+        "$coredns_json" 2>/dev/null || {
+            log "WARNING: sed 替换 DoT 失败，恢复备份"
+            mv "${coredns_json}.bak" "$coredns_json" 2>/dev/null || true
+            return 1
+        }
+
+    log "Cloudflare DoT 已替换为国内 DNS"
+    return 0
+}
+
 # 方案 A：通过 ha CLI 配置 DNS（推荐，CLI 内部已处理 token）
 configure_via_ha_cli() {
     log "通过 'ha dns' CLI 配置国内 DNS ..."
@@ -173,6 +215,19 @@ configure_via_ha_cli() {
     done
     if [ "$restart_ok" -ne 1 ]; then
         log "WARNING: hassio_dns 经过 10 次重试仍无法重启"
+    fi
+
+    # 修复 Cloudflare DoT fallback（国内封 Cloudflare DoT，导致 checkonline 超时）
+    # 必须放在 ha dns restart 之后：restart 会重新生成 coredns.json（此时仍有 Cloudflare），
+    # 然后我们直接修改 JSON 替换 Cloudflare 为国内 DNS。
+    # 注意：不能再用 ha dns restart，因为 supervisor 会从模板重新生成 JSON，覆盖我们的修复！
+    # 必须用 docker restart hassio_dns（只重启容器，读取已修改的文件，不触发重新生成）
+    if fix_coredns_dot_fallback; then
+        log "重新加载 hassio_dns 使 DoT 修复生效（docker restart，非 ha dns restart）..."
+        docker restart hassio_dns 2>/dev/null && {
+            log "hassio_dns 容器重启成功，DoT 修复已生效"
+            sleep 3  # 等待 CoreDNS 启动
+        } || log "WARNING: docker restart hassio_dns 失败"
     fi
 
     # 关键：触发 supervisor 重新检测网络 + 拉 HA Core 镜像
@@ -251,7 +306,8 @@ main() {
     wait_for_hassio_cli || true
 
     if is_already_configured; then
-        exit 0
+        log "国内 DNS 已配置，但仍需修复 Cloudflare DoT fallback 并重启 ..."
+        # 不跳过：即使 servers 正确，Cloudflare DoT 仍可能阻塞连通性检查
     fi
 
     # 方案 A: ha CLI

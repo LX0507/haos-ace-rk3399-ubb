@@ -4,6 +4,25 @@
 
 set -e
 
+# 修复 CoreDNS JSON 中的 Cloudflare DoT fallback
+fix_coredns_dot_fallback() {
+    local coredns_json="/mnt/data/supervisor/dns/coredns.json"
+    if [ ! -f "$coredns_json" ]; then
+        return 1
+    fi
+    if ! grep -qE '1\.1\.1\.1|1\.0\.0\.1' "$coredns_json" 2>/dev/null; then
+        return 0
+    fi
+    cp "$coredns_json" "${coredns_json}.bak" 2>/dev/null || true
+    sed -i \
+        -e 's|tls://1\.1\.1\.1|dns://223.5.5.5|g' \
+        -e 's|tls://1\.0\.0\.1|dns://119.29.29.29|g' \
+        -e 's|tls://1\.1\.1\.2|dns://223.5.5.5|g' \
+        -e 's|tls://1\.0\.0\.2|dns://119.29.29.29|g' \
+        "$coredns_json" 2>/dev/null || { mv "${coredns_json}.bak" "$coredns_json" 2>/dev/null; return 1; }
+    return 0
+}
+
 log() {
     echo "[hassos-dns-cn-init-recheck] $1"
     logger -t hassos-dns-cn-init-recheck "$1" 2>/dev/null || true
@@ -55,7 +74,14 @@ if echo "$CONNECTED" | grep -qi "true"; then
     exit 0
 fi
 
-log "supervisor 仍未联网，触发 healthcheck + reload ..."
+log "supervisor 仍未联网，修复 Cloudflare DoT fallback + 触发 healthcheck + reload ..."
+
+# 修复 CoreDNS DoT fallback 并重启
+configure_host_dns
+if fix_coredns_dot_fallback; then
+    log "Cloudflare DoT 已替换，重启 hassio_dns 容器使修复生效（docker restart，非 ha dns restart）..."
+    docker restart hassio_dns 2>/dev/null && sleep 3 || true
+fi
 docker exec hassio_cli ha resolution healthcheck 2>&1 | head -5 || true
 docker exec hassio_cli ha supervisor reload 2>&1 | head -5 || true
 sleep 3
