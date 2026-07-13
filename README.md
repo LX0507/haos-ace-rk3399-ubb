@@ -119,15 +119,6 @@ U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd i
 | Supervisor DNS servers | `ha dns options --servers 223.5.5.5 --servers 119.29.29.29` | supervisor / 容器 DNS forward 指向国内 |
 | NTP 时间同步 | ntp.aliyun.com + ntp.tencent.com | 国内 NTP 服务器 |
 | APT 源（构建阶段） | `mirrors.aliyun.com` 替代 `deb.debian.org` | 加速 Docker 镜像构建 |
-| GitHub 下载 | `ghproxy.com` + `github.yixuan.mom` 镜像 | 加速 assismgr 等 GitHub Release 下载（**备用**：`gh.con.sh`） |
-
-> **GitHub 加速 URL 模式**：
-> - `ghproxy.com`: `https://ghproxy.com/https://github.com/owner/repo/...`
-> - `github.yixuan.mom` (基于 Cloudflare Workers，国内可用): `https://github.yixuan.mom/<完整 GitHub URL>`
->   - 示例：`https://github.yixuan.mom/https://github.com/LanSilence/assismgr/releases/download/v0.1.8/assismgr_v0.1.8_arm64.deb`
->   - 支持 archive / release / blob / raw / raw.githubusercontent.com
-
-> **注意**: ghcr.io（Home Assistant Core/Supervisor 镜像仓库）在国内没有免费公共镜像。ghcr.io 在中国大陆通常可直接访问（不受 GFW 影响），若下载慢建议使用宽带网络而非移动热点。
 
 ---
 
