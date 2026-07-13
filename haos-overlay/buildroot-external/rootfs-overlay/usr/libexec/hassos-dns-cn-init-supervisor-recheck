@@ -118,6 +118,16 @@ if fix_coredns_dot_fallback; then
 fi
 # 关键修复 (Build #43): 等 hassio_dns 健康再 healthcheck
 wait_for_hassio_dns_healthy || true
+# 关键修复 (Build #44): 重启 dockerd + assismgr 让它们重读 /etc/resolv.conf
+# dockerd 启动时缓存的 dhcp 路由器 DNS (192.168.1.1) 不会动态更新，
+# 导致 dockerd [resolver] 仍发到 192.168.1.1:53 (国内慢)。
+if command -v systemctl >/dev/null 2>&1; then
+    log "重启 dockerd 让其重读 /etc/resolv.conf (hassio_dns 已就绪) ..."
+    systemctl restart docker 2>&1 | head -3 || true
+    sleep 8
+    log "重启 assismgr 让其重读 /etc/resolv.conf ..."
+    systemctl restart assismgr 2>&1 | head -3 || true
+fi
 docker exec hassio_cli ha resolution healthcheck 2>&1 | head -5 || true
 docker exec hassio_cli ha supervisor reload 2>&1 | head -5 || true
 sleep 3
