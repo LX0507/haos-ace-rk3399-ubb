@@ -29,18 +29,52 @@ log() {
 }
 
 # 配置 host DNS，确保 hassio_dns 的 locals 不是路由器慢 DNS
+# 关键修复 (Build #43): 加重试循环，因为 timer 触发时可能 NM 还没激活 end0
 configure_host_dns() {
     local dns_servers="223.5.5.5 119.29.29.29"
     if command -v resolvectl >/dev/null 2>&1; then
         resolvectl dns end0 $dns_servers 2>/dev/null || true
     fi
     if command -v nmcli >/dev/null 2>&1; then
-        local conn_name=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ':end0$' | cut -d: -f1 | head -1)
+        local conn_name=""
+        local attempt=0
+        local max_attempts=10
+        while [ $attempt -lt $max_attempts ]; do
+            conn_name=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ':end0$' | cut -d: -f1 | head -1)
+            if [ -n "$conn_name" ]; then
+                break
+            fi
+            attempt=$((attempt + 1))
+            sleep 2
+        done
         if [ -n "$conn_name" ]; then
             nmcli connection modify "$conn_name" ipv4.dns "$dns_servers" ipv4.ignore-auto-dns yes 2>/dev/null || true
             nmcli connection modify "$conn_name" ipv6.ignore-auto-dns yes 2>/dev/null || true
         fi
     fi
+}
+
+# 等待 hassio_dns 健康（CoreDNS listening on .:53）
+# 关键修复 (Build #43): 避免在 hassio_dns 起来前 healthcheck 导致
+# dockerd [resolver] 解析超时 → supervisor 立即判 No connectivity
+wait_for_hassio_dns_healthy() {
+    local attempt=0
+    local max_attempts=60
+    while [ $attempt -lt $max_attempts ]; do
+        if command -v docker >/dev/null 2>&1; then
+            if docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
+                if (echo > /dev/tcp/127.0.0.1/53) 2>/dev/null; then
+                    return 0
+                fi
+            fi
+        fi
+        attempt=$((attempt + 1))
+        if [ $((attempt % 10)) -eq 0 ]; then
+            log "hassio_dns 尚未健康 (尝试 $attempt/$max_attempts) ..."
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 # 等待 hassio_cli 容器就绪
@@ -82,6 +116,8 @@ if fix_coredns_dot_fallback; then
     log "Cloudflare DoT 已替换，重启 hassio_dns 容器使修复生效（docker restart，非 ha dns restart）..."
     docker restart hassio_dns 2>/dev/null && sleep 3 || true
 fi
+# 关键修复 (Build #43): 等 hassio_dns 健康再 healthcheck
+wait_for_hassio_dns_healthy || true
 docker exec hassio_cli ha resolution healthcheck 2>&1 | head -5 || true
 docker exec hassio_cli ha supervisor reload 2>&1 | head -5 || true
 sleep 3

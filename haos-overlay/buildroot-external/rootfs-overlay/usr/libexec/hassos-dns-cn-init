@@ -37,8 +37,23 @@ configure_host_dns() {
     fi
 
     # 方法2: 使用 nmcli 修改当前连接（持久化）
+    # 关键修复 (Build #43): 之前的版本立即查询 "connection show --active"，
+    # 但当 service 早于 NM 激活 end0 时返回空 → 修复失败。
+    # 现在重试最多 10 次 × 2s（共 20s），覆盖 NM 异步激活的窗口。
     if command -v nmcli >/dev/null 2>&1; then
-        local conn_name=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ':end0$' | cut -d: -f1 | head -1)
+        local conn_name=""
+        local attempt=0
+        local max_attempts=10
+        while [ $attempt -lt $max_attempts ]; do
+            conn_name=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ':end0$' | cut -d: -f1 | head -1)
+            if [ -n "$conn_name" ]; then
+                break
+            fi
+            attempt=$((attempt + 1))
+            log "等待 end0 活动连接就绪 (尝试 $attempt/$max_attempts) ..."
+            sleep 2
+        done
+
         if [ -n "$conn_name" ]; then
             if nmcli connection modify "$conn_name" ipv4.dns "$dns_servers" ipv4.ignore-auto-dns yes 2>/dev/null; then
                 log "nmcli 修改连接 $conn_name IPv4 DNS 成功"
@@ -51,7 +66,7 @@ configure_host_dns() {
                 log "WARNING: nmcli 禁用 $conn_name IPv6 auto DNS 失败"
             fi
         else
-            log "WARNING: 未找到 end0 的活动连接"
+            log "WARNING: ${max_attempts} 次重试后仍未找到 end0 活动连接（NM 可能未激活）"
         fi
     fi
 }
@@ -82,6 +97,42 @@ wait_for_hassio_cli() {
         sleep 1
     done
     log "WARNING: hassio_cli 容器 180s 内未就绪"
+    return 1
+}
+
+# 等待 hassio_dns 容器进入"健康"状态（CoreDNS 真正监听 .:53 端口）
+# 关键修复 (Build #43): 避免在 hassio_dns 起来前触发 supervisor healthcheck，
+# 否则 dockerd [resolver] 会发 connection refused → supervisor 立即判 No connectivity
+wait_for_hassio_dns_healthy() {
+    log "等待 hassio_dns 容器健康（CoreDNS listening on .:53）..."
+    local attempt=0
+    local max_attempts=60
+    while [ $attempt -lt $max_attempts ]; do
+        if command -v docker >/dev/null 2>&1; then
+            if docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
+                # 检查 CoreDNS 是否真的在监听 .:53（用 nslookup 或 dig 探测）
+                # 用 nslookup 解析一个简单域名以验证 .:53 端口可达
+                if command -v nslookup >/dev/null 2>&1; then
+                    # 用短超时探测，CoreDNS 启动即返回 SERVFAIL 也算监听
+                    if nslookup -port=53 -timeout=2 homeassistant.home 127.0.0.1 >/dev/null 2>&1; then
+                        log "hassio_dns 健康（CoreDNS listening on .:53）"
+                        return 0
+                    fi
+                fi
+                # 备用：检查 .:53 端口是否能连接（用 /dev/tcp）
+                if (echo > /dev/tcp/127.0.0.1/53) 2>/dev/null; then
+                    log "hassio_dns 健康（端口 53 开放）"
+                    return 0
+                fi
+            fi
+        fi
+        attempt=$((attempt + 1))
+        if [ $((attempt % 5)) -eq 0 ]; then
+            log "hassio_dns 尚未健康 (尝试 $attempt/$max_attempts) ..."
+        fi
+        sleep 1
+    done
+    log "WARNING: hassio_dns ${max_attempts}s 内未健康"
     return 1
 }
 
@@ -229,6 +280,12 @@ configure_via_ha_cli() {
             sleep 3  # 等待 CoreDNS 启动
         } || log "WARNING: docker restart hassio_dns 失败"
     fi
+
+    # 关键修复 (Build #43): 等 hassio_dns 完全健康（CoreDNS listening）后再 healthcheck
+    # 否则 dockerd [resolver] 会发 checkonline → 127.0.0.1:53 connection refused
+    # （hassio_dns 还在启动中）→ supervisor 立即判 No connectivity
+    # 此函数最多等 60s，覆盖 hassio_dns 启动到 CoreDNS 完全就绪的时间
+    wait_for_hassio_dns_healthy || true
 
     # 关键：触发 supervisor 重新检测网络 + 拉 HA Core 镜像
     # supervisor 启动时 DNS 未修好，被标记 'No Supervisor connectivity'，
