@@ -2,6 +2,9 @@
 # NetworkManager dispatcher: end0 连接 up 时立即配置 host DNS，再后台配置 supervisor DNS
 # 作为 hassos-dns-cn-init.service 的双保险：service 失败后，dispatcher 仍会在
 # 网络恢复时尝试重新配置。
+#
+# Build #48 关键修改: 不再强制 223.5.5.5/119.29.29.29 (用户 ISP 阻断)
+# 改用 192.168.1.1 (路由器 DNS, 唯一可达)
 
 INTERFACE="$1"
 ACTION="$2"
@@ -9,9 +12,10 @@ ACTION="$2"
 [ "$INTERFACE" = "end0" ] || exit 0
 [ "$ACTION" = "up" ] || [ "$ACTION" = "dhcp4-change" ] || exit 0
 
-# 立即配置 host DNS，避免 systemd-resolved / dockerd 使用路由器的慢 DNS
+# 立即配置 host DNS
+# Build #48: 改用 192.168.1.1 (路由器 DNS, 唯一可达)
 # 这是关键：hassio_dns 的 locals 会从 host DNS 读取；host DNS 快则容器 DNS 也快
-DNS_SERVERS="223.5.5.5 119.29.29.29"
+DNS_SERVERS="192.168.1.1"
 
 if command -v resolvectl >/dev/null 2>&1; then
     resolvectl dns end0 $DNS_SERVERS 2>/dev/null || true

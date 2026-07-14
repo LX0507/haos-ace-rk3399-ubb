@@ -9,7 +9,8 @@
 set -e
 
 LOCK_FILE="/var/run/hassos-dns-cn-init-recheck.lock"
-DNS_SERVERS="223.5.5.5 119.29.29.29"
+# Build #48 关键修改: 改用 192.168.1.1 (路由器 DNS, 唯一可达)
+DNS_SERVERS="192.168.1.1"
 
 log() {
     echo "[hassos-dns-cn-init-recheck] $1"
@@ -41,20 +42,24 @@ fix_coredns_dot_fallback() {
     fi
 
     if is_corefile_already_fixed; then
-        log "hassio_dns 容器 /etc/corefile 已无 Cloudflare DoT，跳过修复"
+        log "hassio_dns 容器 /etc/corefile 已修复，跳过"
         return 0
     fi
 
-    log "检测到 hassio_dns 容器 /etc/corefile 含 Cloudflare DoT，正在修复 ..."
+    log "检测到 hassio_dns 容器 /etc/corefile 需要修复 ..."
     docker exec hassio_dns sh -c 'cp -f /etc/corefile /etc/corefile.bak 2>/dev/null || true' || true
+
+    # Build #48 关键修复: 同时修复 .:53 forward (走 127.0.0.11 死循环)
+    # 和 .:5553 Cloudflare DoT (国内被封)
     if docker exec hassio_dns sh -c 'sed -i \
-        -e "s|tls://1\.1\.1\.1|dns://223.5.5.5|g" \
-        -e "s|tls://1\.0\.0\.1|dns://119.29.29.29|g" \
-        -e "s|tls://1\.1\.1\.2|dns://223.5.5.5|g" \
-        -e "s|tls://1\.0\.0\.2|dns://119.29.29.29|g" \
-        -e "s|tls://cloudflare-dns\.com|dns://223.5.5.5|g" \
+        -e "s|forward \. dns://127\.0\.0\.11|forward . dns://192.168.1.1|g" \
+        -e "s|tls://1\.1\.1\.1|dns://192.168.1.1|g" \
+        -e "s|tls://1\.0\.0\.1|dns://192.168.1.1|g" \
+        -e "s|tls://1\.1\.1\.2|dns://192.168.1.1|g" \
+        -e "s|tls://1\.0\.0\.2|dns://192.168.1.1|g" \
+        -e "s|tls://cloudflare-dns\.com|dns://192.168.1.1|g" \
         /etc/corefile' 2>/dev/null; then
-        log "已替换 /etc/corefile 中的 Cloudflare DoT 为国内 DNS"
+        log "已替换 /etc/corefile (.:53 forward + .:5553 Cloudflare DoT) 为路由器 DNS"
     else
         log "WARNING: 替换 /etc/corefile 失败"
         return 1
