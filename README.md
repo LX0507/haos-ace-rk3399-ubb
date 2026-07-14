@@ -108,15 +108,15 @@ U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd i
 | systemd ordering cycle | haos-ensure-files 依赖形成循环 | 修改 After / WantedBy 目标 |
 | Supervisor 机器类型错误 | `SUPERVISOR_MACHINE` 误改 | 保持 `qemuarm-64` |
 | containerd snapshotter 冲突 | `storage-driver=overlay2` 与新版冲突 | 移除显式 storage-driver |
-| Supervisor 永久 'No connectivity' | hassio_dns `locals` 读 host 路由器慢 DNS（192.168.1.1），连通性检查超时 | host 层强制 DNS（223.5.5.5/119.29.29.29）+ supervisor DNS 同配 + recheck 保底 |
+| Supervisor 永久 'No connectivity' | hassio_dns 上游 DNS 不可达（路由器 192.168.1.1:53 经常 i/o timeout；或公共 DNS 被阻断） | CoreDNS 多上游故障转移（公共 DNS 119.29.29.29/223.5.5.5/8.8.8.8 + 路由器网关，自动 failover）|
 
 ### 中国国内网络加速配置
 
 | 加速项 | 配置 | 说明 |
 |--------|------|------|
 | Docker Hub 镜像 | `registry-mirrors`: DaoCloud + 1ms + 1panel + 中科大 + 网易（共 5 个） | 加速 `docker.io` 镜像拉取 |
-| **Host 系统 DNS（强制）** | `resolvectl dns end0 223.5.5.5 119.29.29.29` + `nmcli ipv4.ignore-auto-dns yes` | **关键**：host DNS 决定 hassio_dns 的 `locals`，必须走国内 DNS 才能修复 supervisor 连通性 |
-| Supervisor DNS servers | `ha dns options --servers 223.5.5.5 --servers 119.29.29.29` | supervisor / 容器 DNS forward 指向国内 |
+| **Host 系统 DNS** | host 指向 hassio_dns (`172.30.32.3`)，实际解析由 hassio_dns 的 Corefile 多上游故障转移处理 | 不再强行把 host 指向路由器（实测 192.168.1.1:53 经常 i/o timeout 导致 dockerd resolver 超时）|
+| CoreDNS 上游（多故障转移） | `ha dns options --servers dns://119.29.29.29 --servers dns://223.5.5.5 --servers dns://8.8.8.8 --servers dns://<网关>` | 多上游：路由器可用走路由器，不可用自动转公共 DNS |
 | NTP 时间同步 | ntp.aliyun.com + ntp.tencent.com | 国内 NTP 服务器 |
 | APT 源（构建阶段） | `mirrors.aliyun.com` 替代 `deb.debian.org` | 加速 Docker 镜像构建 |
 
@@ -126,25 +126,33 @@ U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd i
 
 8123 端口长期停留在 landingpage、HA Core 永远起不来的**根因**，不是 Docker 镜像下载慢，而是 **supervisor 永久标记 `No Supervisor connectivity`**：
 
-1. 设备连路由器后，host 系统通过 DHCP 拿到路由器 DNS（如 `192.168.1.1`），在国内网络下该 DNS 响应极慢或超时。
+1. 设备连路由器后，host 系统通过 DHCP 拿到路由器 DNS（如 `192.168.1.1`）。**实测该路由器 DNS 经常 i/o timeout（不响应）**，单一路由器上游会让所有解析失败。
 2. supervisor 启动时执行连通性检查 `checkonline.home-assistant.io`，因 DNS 解析超时而被**永久**标记为"无网络"。
 3. supervisor 一旦标记无网络，就**永不拉取** `ghcr.io` 的 HA Core / Supervisor 镜像 → 8123 永远停在 landingpage。
 
-### 为什么只改 supervisor 的 DNS servers 不够
+### 为什么单一路由器 DNS 不行
 
-hassio_dns（CoreDNS）的 `.:53` 配置里有一组 `locals`（如 `dns://192.168.1.1`），它是从 **host 系统的 DNS 配置**（`systemd-resolved` / NetworkManager 连接 DNS）读取的，而 **不是** 从 supervisor 的 `dns servers` 读取。supervisor 的 `dns servers` 只控制 `forward`，改它不会动 `locals`。所以即使 supervisor servers 指向 223.5.5.5，hassio_dns 仍会把慢速的路由器 DNS 当作 fallback `locals` 使用。
+不同家庭网络差异极大：有的路由器 DNS 正常，有的（如本项目的 `192.168.1.1`）DNS 代理不可用；有的网络公共 DNS 被阻断。只配一个上游（路由器 **或** 某个公共 DNS）在任何一种异常网络下都会失败。
 
-### 修复方案：从 host 层强制 DNS
+### 修复方案：CoreDNS 多上游故障转移
 
-三个脚本统一实现 `configure_host_dns()`，在 supervisor 启动早期就把 **host end0 的 DNS 强制改为国内**（`223.5.5.5` / `119.29.29.29` + `ignore-auto-dns`），从而让 hassio_dns 的 `locals` 也跟着变成国内 DNS：
+`hassos-dns-cn-init` 把 hassio_dns（CoreDNS）的 Corefile 所有 `forward .` 行统一替换为
+**多上游列表**：`119.29.29.29`（DNSPod/腾讯）、`223.5.5.5`（AliDNS）、`8.8.8.8`（兜底）+ **运行时检测的默认网关**。
+CoreDNS 自动对每个上游做健康检测，不可达的上游会被剔除，解析自动 failover 到可用上游：
+
+- 路由器 DNS 可用 → 走路由器（适配任意家庭网段，符合此前诉求）
+- 路由器 DNS 不可用（i/o timeout）→ 自动转移到公共 DNS
+- 公共 DNS 个别被阻断 → 自动转移到其它公共 DNS
+
+host 系统 / dockerd 的 DNS 不再强行指向路由器，而是指向 `hassio_dns`（`172.30.32.3`），由 CoreDNS 统一做故障转移（与 stock HA OS 行为一致，也避免 dockerd 直接查已死路由器超时）。
 
 | 脚本 | 触发时机 | 作用 |
 |------|----------|------|
-| `etc/NetworkManager/dispatcher.d/99-hassos-dns-cn` | 网卡 up（最早，T≈10s） | 立即 `resolvectl` + `nmcli` 配 host DNS，并后台拉起主脚本 |
-| `usr/libexec/hassos-dns-cn-init` | `hassos-dns-cn-init.service`（`After=hassos-supervisor`） | 主力：配 host DNS → `ha dns options` → `ha dns restart`（带重试）→ healthcheck |
-| `usr/libexec/hassos-dns-cn-init-supervisor-recheck` | `*.timer` 每 5 分钟保底 | 联网后重新配置 + healthcheck，成功后自禁 |
+| `etc/NetworkManager/dispatcher.d/99-hassos-dns-cn` | 网卡 up（最早，T≈10s） | 立即把 host DNS 指向 hassio_dns，并后台拉起主脚本 |
+| `usr/libexec/hassos-dns-cn-init` | `hassos-dns-cn-init.service`（`After=hassos-supervisor`） | 主力：配 host DNS → `ha dns options` 多上游 → 修 Corefile Cloudflare DoT + 多上游 → healthcheck |
+| `usr/libexec/hassos-dns-cn-init-supervisor-recheck` | `*.timer` 每 5 分钟保底 | 联网后重新配置 + healthcheck，成功后自禁 timer |
 
-> 三重保险确保无论 supervisor 何时就绪，host DNS 都已指向国内，连通性检查能过关，HA Core 镜像正常拉起。
+> 三重保险确保无论 supervisor 何时就绪，CoreDNS 多上游都已生效，连通性检查能过关，HA Core 镜像正常拉起。
 
 ---
 
@@ -405,7 +413,7 @@ ha core restart
 ```
 
 **Q: DNS 解析失败 / 域名无法解析？**
-A: 系统已强制 host 与 supervisor 走国内 DNS（223.5.5.5 / 119.29.29.29），不再依赖路由器慢 DNS。若仍解析失败，请检查：① 路由器是否阻断到国内 DNS 的 UDP/TCP 53 出站；② `resolvectl status end0` 是否显示正确的国内 DNS；③ supervisor 是否仍报 `No Supervisor connectivity`（见上一条）。
+A: 系统已配置 CoreDNS 多上游故障转移（公共 DNS 119.29.29.29/223.5.5.5/8.8.8.8 + 运行时检测的路由器网关），host 与 supervisor 都通过 hassio_dns（`172.30.32.3`）解析，任一上游不可达会自动 failover。若仍解析失败，请检查：① `docker exec hassio_dns cat /etc/corefile` 的 `forward .` 是否为多上游列表；② `docker logs hassio_dns` 有无上游全部 unhealthy；③ supervisor 是否仍报 `No Supervisor connectivity`（见上一条）。
 
 ### 系统相关
 
