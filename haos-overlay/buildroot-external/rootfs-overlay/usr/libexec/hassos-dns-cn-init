@@ -103,19 +103,22 @@ wait_for_hassio_cli() {
     return 1
 }
 
-# 等待 hassio_dns 容器进入"健康"状态（CoreDNS 真正监听 .:53 端口）
+# 等待 hassio_dns 容器进入"健康"状态
 # 关键修复 (Build #43): 避免在 hassio_dns 起来前触发 supervisor healthcheck，
 # 否则 dockerd [resolver] 会发 connection refused → supervisor 立即判 No connectivity
+# 关键修复 (Build #46): 之前检测 host 127.0.0.1:53，但 hassio_dns 容器**不监听 host
+# 127.0.0.1:53**（只在 hassio bridge 172.30.32.3:53 监听）。改为在容器内
+# 用 docker exec 检测 coredns 进程和 Corefile 状态。
 wait_for_hassio_dns_healthy() {
-    log "等待 hassio_dns 容器健康（CoreDNS listening on .:53）..."
+    log "等待 hassio_dns 容器健康 ..."
     local attempt=0
     local max_attempts=60
     while [ $attempt -lt $max_attempts ]; do
         if command -v docker >/dev/null 2>&1; then
             if docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
-                # 备用：检查 .:53 端口是否能连接（用 /dev/tcp）
-                if (echo > /dev/tcp/127.0.0.1/53) 2>/dev/null; then
-                    log "hassio_dns 健康（端口 53 开放）"
+                # 关键 (Build #46): 在容器内检查 coredns 进程是否运行
+                if docker exec hassio_dns sh -c 'pidof coredns >/dev/null 2>&1' 2>/dev/null; then
+                    log "hassio_dns 健康（coredns 进程运行中）"
                     return 0
                 fi
             fi
@@ -286,6 +289,52 @@ configure_via_ha_cli() {
     # 否则 dockerd [resolver] 会发 checkonline → 127.0.0.1:53 connection refused
     # （hassio_dns 还在启动中）→ supervisor 立即判 No connectivity
     wait_for_hassio_dns_healthy || true
+
+    # 关键修复 (Build #46): 修改 supervisor 容器内部 /etc/resolv.conf
+    # Build #46 根因: supervisor 容器自己的 DNS 解析走 hassio_dns (172.30.32.3)
+    # → hassio_dns .:53 forward → dockerd internal (127.0.0.11) → daemon.json dns
+    # → 127.0.0.1 (refused) / 223.5.5.5 (i/o timeout 在容器内部)
+    # 修复: 直接让 supervisor 容器 /etc/resolv.conf 指向国内 DNS，绕开 hassio_dns
+    # 注意: supervisor 会**定期重写** /etc/resolv.conf，每次 hassio_dns restart
+    # 时也会重写，所以这个修复是"被覆盖"时立即重做。
+    if command -v docker >/dev/null 2>&1; then
+        if docker inspect --format '{{.State.Running}}' hassio_supervisor 2>/dev/null | grep -q true; then
+            # 写一个 watch 脚本：监控 supervisor 容器的 /etc/resolv.conf，
+            # 一旦发现被改成 127.0.0.1 (hassio_dns) 就立即覆盖为国内 DNS
+            # 用 nohup 启动后台进程
+            cat > /tmp/hassos-dns-cn-supervisor-resolv-watch.sh << 'WATCH_EOF'
+#!/bin/sh
+# 后台监控 supervisor 容器 /etc/resolv.conf，
+# 每次 hassio_dns 启动/重启后 supervisor 会重写 /etc/resolv.conf，
+# 把 nameserver 改为 127.0.0.1 (hassio_dns)，我们需要立即覆盖
+while true; do
+    if command -v docker >/dev/null 2>&1; then
+        if docker inspect --format '{{.State.Running}}' hassio_supervisor 2>/dev/null | grep -q true; then
+            CURRENT=$(docker exec hassio_supervisor cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1)
+            if [ -n "$CURRENT" ] && echo "$CURRENT" | grep -q "127.0.0.1"; then
+                # 覆盖为国内 DNS
+                docker exec hassio_supervisor sh -c 'cat > /etc/resolv.conf <<EOF
+nameserver 223.5.5.5
+nameserver 119.29.29.29
+EOF
+' 2>/dev/null && logger -t hassos-dns-cn-resolv-watch "已覆盖 supervisor 容器 /etc/resolv.conf 为国内 DNS"
+            fi
+        fi
+    fi
+    sleep 3
+done
+WATCH_EOF
+            chmod +x /tmp/hassos-dns-cn-supervisor-resolv-watch.sh
+            nohup /tmp/hassos-dns-cn-supervisor-resolv-watch.sh >/dev/null 2>&1 &
+            log "已启动 supervisor /etc/resolv.conf 监控后台进程 (PID: $!)"
+            # 立即执行一次
+            docker exec hassio_supervisor sh -c 'cat > /etc/resolv.conf <<EOF
+nameserver 223.5.5.5
+nameserver 119.29.29.29
+EOF
+' 2>/dev/null || log "WARNING: 立即覆盖 supervisor /etc/resolv.conf 失败"
+        fi
+    fi
 
     # 关键修复 (Build #44): 重启 assismgr 让它重新读 /etc/resolv.conf
     # assismgr 启动时 (T=46s) /etc/resolv.conf 仍是 dhcp 路由器 DNS，

@@ -98,14 +98,16 @@ configure_host_dns() {
     fi
 }
 
-# 等待 hassio_dns 健康（CoreDNS listening on .:53）
+# 等待 hassio_dns 健康（CoreDNS 进程在容器内运行）
+# 关键修复 (Build #46): 之前检测 host 127.0.0.1:53，但 hassio_dns 容器**不监听 host
+# 127.0.0.1:53**（只在 hassio bridge 172.30.32.3:53 监听）。改为在容器内用 docker exec 检测
 wait_for_hassio_dns_healthy() {
     local attempt=0
     local max_attempts=60
     while [ $attempt -lt $max_attempts ]; do
         if command -v docker >/dev/null 2>&1; then
             if docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
-                if (echo > /dev/tcp/127.0.0.1/53) 2>/dev/null; then
+                if docker exec hassio_dns sh -c 'pidof coredns >/dev/null 2>&1' 2>/dev/null; then
                     return 0
                 fi
             fi
