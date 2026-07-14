@@ -32,15 +32,16 @@ fi
 logger -t hassos-dns-cn-dispatcher "检测到默认网关: $DNS_SERVERS (host DNS)"
 
 # 立即配置 host DNS
-# 这是关键：hassio_dns 的 locals 会从 host DNS 读取；host DNS 快则容器 DNS 也快
+# Build #50: 指向 hassio_dns (172.30.32.3), 由 hassio_dns 的 Corefile 多上游故障转移
+# 处理实际解析。不再指向路由器 (实测 192.168.1.1:53 经常 i/o timeout)。
 if command -v resolvectl >/dev/null 2>&1; then
-    resolvectl dns end0 $DNS_SERVERS 2>/dev/null || true
+    resolvectl dns end0 172.30.32.3 2>/dev/null || true
 fi
 
 if command -v nmcli >/dev/null 2>&1; then
     CONN_NAME=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ':end0$' | cut -d: -f1 | head -1)
     if [ -n "$CONN_NAME" ]; then
-        nmcli connection modify "$CONN_NAME" ipv4.dns "$DNS_SERVERS" ipv4.ignore-auto-dns yes 2>/dev/null || true
+        nmcli connection modify "$CONN_NAME" ipv4.dns "172.30.32.3" ipv4.ignore-auto-dns yes 2>/dev/null || true
         nmcli connection modify "$CONN_NAME" ipv6.ignore-auto-dns yes 2>/dev/null || true
     fi
 fi

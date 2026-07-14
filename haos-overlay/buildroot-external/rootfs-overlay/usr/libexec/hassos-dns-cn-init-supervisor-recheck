@@ -8,7 +8,8 @@
 
 set -e
 
-LOCK_FILE="/var/run/hassos-dns-cn-init-recheck.lock"
+# Build #50: 与 hassos-dns-cn-init 共用同一把锁, 避免二者并发执行 ha dns / 改 Corefile
+LOCK_FILE="/var/run/hassos-dns-cn-init.lock"
 # Build #49 关键修复: 不再硬编码 192.168.1.1
 # 不同家庭 IP 网段不同: 192.168.0.1/192.168.1.1/10.0.0.1/192.168.2.1 等
 # 用运行时检测的默认网关 IP, 适配任意家庭网段
@@ -39,6 +40,19 @@ get_default_gateway() {
     echo "$gw"
 }
 
+# 公共 DNS 上游 (国内可达) - 同 hassos-dns-cn-init
+PUBLIC_DNS_LIST="119.29.29.29 223.5.5.5 8.8.8.8"
+
+# 生成 CoreDNS forward 用的上游列表 (dns:// 前缀, 空格分隔)
+build_upstream_fmt() {
+    local gw="$1"
+    local out=""
+    for s in $PUBLIC_DNS_LIST $gw; do
+        out="$out dns://$s"
+    done
+    echo "${out# }"
+}
+
 # 检查 hassio_dns 容器内 /etc/corefile 是否已修复 (Cloudflare DoT 已被替换)
 is_corefile_already_fixed() {
     if ! command -v docker >/dev/null 2>&1; then
@@ -54,7 +68,7 @@ is_corefile_already_fixed() {
 }
 
 # 修复 hassio_dns 容器内 /etc/corefile 的 Cloudflare DoT 硬编码
-# Build #49: 用运行时检测的路由器 IP (默认网关) - 适配任意家庭网段
+# Build #50: 用「公共 DNS + 路由器网关」多上游故障转移列表替换
 fix_coredns_dot_fallback() {
     if ! command -v docker >/dev/null 2>&1; then
         return 1
@@ -64,12 +78,12 @@ fix_coredns_dot_fallback() {
         return 1
     fi
 
-    # Build #49: 用运行时检测的路由器 IP
+    # Build #50: 多上游故障转移列表 (公共 DNS + 路由器网关)
     if [ -z "$DNS_SERVERS" ]; then
         DNS_SERVERS=$(get_default_gateway)
     fi
-    local UPSTREAM_DNS="$DNS_SERVERS"
-    log "Corefile 上游 DNS (路由器 IP): $UPSTREAM_DNS"
+    local UPSTREAM_FMT=$(build_upstream_fmt "$DNS_SERVERS")
+    log "Corefile 上游故障转移列表: $UPSTREAM_FMT"
 
     if is_corefile_already_fixed; then
         log "hassio_dns 容器 /etc/corefile 已修复，跳过"
@@ -79,18 +93,9 @@ fix_coredns_dot_fallback() {
     log "检测到 hassio_dns 容器 /etc/corefile 需要修复 ..."
     docker exec hassio_dns sh -c 'cp -f /etc/corefile /etc/corefile.bak 2>/dev/null || true' || true
 
-    # Build #48 关键修复: 同时修复 .:53 forward (走 127.0.0.11 死循环)
-    # 和 .:5553 Cloudflare DoT (国内被封)
-    # Build #49: 用双引号让 host shell 展开 ${UPSTREAM_DNS}
-    if docker exec hassio_dns sh -c "sed -i \
-        -e 's|forward \. dns://127\.0\.0\.11|forward . dns://${UPSTREAM_DNS}|g' \
-        -e 's|tls://1\\.1\\.1\\.1|dns://${UPSTREAM_DNS}|g' \
-        -e 's|tls://1\\.0\\.0\\.1|dns://${UPSTREAM_DNS}|g' \
-        -e 's|tls://1\\.1\\.1\\.2|dns://${UPSTREAM_DNS}|g' \
-        -e 's|tls://1\\.0\\.0\\.2|dns://${UPSTREAM_DNS}|g' \
-        -e 's|tls://cloudflare-dns\\.com|dns://${UPSTREAM_DNS}|g' \
-        /etc/corefile" 2>/dev/null; then
-        log "已替换 /etc/corefile (.:53 forward + .:5553 Cloudflare DoT) 为路由器 IP ${UPSTREAM_DNS}"
+    # Build #50: 把 Corefile 所有 'forward .' 行统一替换为多上游故障转移列表
+    if docker exec hassio_dns sh -c "sed -i -E 's|^( *)forward \. .*|\1forward . ${UPSTREAM_FMT}|' /etc/corefile" 2>/dev/null; then
+        log "已替换 /etc/corefile (所有 forward) 为多上游故障转移列表: ${UPSTREAM_FMT}"
     else
         log "WARNING: 替换 /etc/corefile 失败"
         return 1
@@ -109,9 +114,9 @@ fix_coredns_dot_fallback() {
     return 1
 }
 
-# 配置 host DNS，确保 hassio_dns 的 locals 不是路由器慢 DNS
+# 配置 host DNS，指向 hassio_dns (由 Corefile 多上游故障转移处理解析)
 configure_host_dns() {
-    local dns_servers="$DNS_SERVERS"
+    local dns_servers="172.30.32.3"
     if command -v resolvectl >/dev/null 2>&1; then
         resolvectl dns end0 $dns_servers 2>/dev/null || true
     fi
@@ -192,7 +197,8 @@ fi
 configure_host_dns
 
 # 检查当前 supervisor 是否认为已联网
-CONNECTED=$(docker exec hassio_cli ha resolution info 2>/dev/null | grep -i "connected" | head -1 || true)
+# 注意: 'connected' 字段在 `ha supervisor info` 中, 不在 `ha resolution info`
+CONNECTED=$(docker exec hassio_cli ha supervisor info 2>/dev/null | grep -iE "^[[:space:]]*connected:" | head -1 || true)
 if echo "$CONNECTED" | grep -qi "true"; then
     log "supervisor 已联网 ($CONNECTED)，停止重试"
     # 停掉本 timer
