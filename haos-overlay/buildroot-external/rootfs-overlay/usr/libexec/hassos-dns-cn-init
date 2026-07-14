@@ -7,14 +7,17 @@
 #   Build #37: 加 NM dispatcher 双保险
 #   Build #38: 改用 ha CLI（内部已含 SUPERVISOR_TOKEN），避免 host 端拿 token
 #              增加 hassio_cli 容器 exec 兜底
-#
-# 可被 systemd service 调用，也可被 NetworkManager dispatcher 调用
+#   Build #45: 关键根因修复 - 直接修改 hassio_dns 容器内 /etc/corefile 中的
+#              Cloudflare DoT 硬编码 (1.1.1.1/1.0.0.1)，用 SIGHUP 让 coredns 重读
+#              + flock 防止 nm-dispatcher 多进程并发 (解决 'Another job is running')
 
 set -e
 
 SUPERVISOR_SOCK="/var/run/supervisor.sock"
 DNS_SERVERS="223.5.5.5 119.29.29.29"
 DNS_COREDNS_JSON="/mnt/data/supervisor/dns/coredns.json"
+# flock 锁: 防止 nm-dispatcher 多个进程同时执行配置逻辑
+LOCK_FILE="/var/run/hassos-dns-cn-init.lock"
 
 log() {
     echo "[hassos-dns-cn-init] $1"
@@ -110,15 +113,6 @@ wait_for_hassio_dns_healthy() {
     while [ $attempt -lt $max_attempts ]; do
         if command -v docker >/dev/null 2>&1; then
             if docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
-                # 检查 CoreDNS 是否真的在监听 .:53（用 nslookup 或 dig 探测）
-                # 用 nslookup 解析一个简单域名以验证 .:53 端口可达
-                if command -v nslookup >/dev/null 2>&1; then
-                    # 用短超时探测，CoreDNS 启动即返回 SERVFAIL 也算监听
-                    if nslookup -port=53 -timeout=2 homeassistant.home 127.0.0.1 >/dev/null 2>&1; then
-                        log "hassio_dns 健康（CoreDNS listening on .:53）"
-                        return 0
-                    fi
-                fi
                 # 备用：检查 .:53 端口是否能连接（用 /dev/tcp）
                 if (echo > /dev/tcp/127.0.0.1/53) 2>/dev/null; then
                     log "hassio_dns 健康（端口 53 开放）"
@@ -162,59 +156,89 @@ is_already_configured() {
     if command -v docker >/dev/null 2>&1; then
         INFO=$(docker exec hassio_cli ha dns info 2>/dev/null || true)
         if echo "$INFO" | grep -q "223.5.5.5"; then
-            log "国内 DNS 已配置 (hassio_cli ha dns info)，跳过"
-            return 0
-        fi
-    fi
-    if [ -f "$DNS_COREDNS_JSON" ] && command -v jq >/dev/null 2>&1; then
-        if jq -e '.servers | index("dns://223.5.5.5")' "$DNS_COREDNS_JSON" >/dev/null 2>&1; then
-            log "国内 DNS 已配置 (coredns.json)，跳过"
+            log "国内 DNS 已配置 (hassio_cli ha dns info)"
             return 0
         fi
     fi
     return 1
 }
 
-# 修复 CoreDNS JSON 中的 Cloudflare DoT fallback
-# Cloudflare DoT (1.1.1.1:853, 1.0.0.1:853) 在国内被封，导致 CoreDNS .:5553 端口超时
-# supervisor 的 CoreDNS 模板始终包含 Cloudflare DoT forward 作为 5553 端口上游，
-# ha dns options 只改端口 53 的 forward，不动端口 5553
-# 需要直接修改生成的 coredns.json，替换所有 Cloudflare 端点为国内 DNS
+# 检查 hassio_dns 容器内 /etc/corefile 是否已修复 (Cloudflare DoT 已被替换)
+# 关键修复 (Build #45): 之前只检查 coredns.json 是不够的，因为 Cloudflare DoT
+# 硬编码在 hassio_dns 容器内的 tempio 模板 /usr/share/tempio/corefile 中，
+# coredns.json 是动态数据（不含 tls://1.1.1.1）。
+is_corefile_already_fixed() {
+    if ! command -v docker >/dev/null 2>&1; then
+        return 1
+    fi
+    if ! docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
+        return 1
+    fi
+    # 检查 hassio_dns 容器内的 /etc/corefile 是否还包含 Cloudflare DoT
+    if docker exec hassio_dns sh -c 'grep -qE "tls://1\.1\.1\.1|tls://1\.0\.0\.1|tls://cloudflare-dns\.com" /etc/corefile' 2>/dev/null; then
+        return 1  # 仍有 Cloudflare DoT，需要修复
+    fi
+    return 0  # 已修复
+}
+
+# 修复 hassio_dns 容器内 /etc/corefile 的 Cloudflare DoT 硬编码
+# 关键修复 (Build #45): 这是 Build #44 失败的核心根因。
+# Cloudflare DoT (1.1.1.1:853, 1.0.0.1:853) 在 hassio_dns 容器的 tempio 模板
+# (/usr/share/tempio/corefile) 中硬编码，supervisor 启动 hassio_dns 时会
+# 自动重新生成 /etc/corefile。coredns.json 不含 tls://1.1.1.1，只有 tempio 模板有。
+# 修复: 直接 docker exec 修改 /etc/corefile 替换 Cloudflare DoT 为国内 DNS，
+#       然后在容器内 SIGHUP coredns 让它重读（不重启容器，避免 supervisor 重新生成）。
 fix_coredns_dot_fallback() {
-    local coredns_json="/mnt/data/supervisor/dns/coredns.json"
-    if [ ! -f "$coredns_json" ]; then
-        log "coredns.json 不存在，跳过 DoT 修复"
+    if ! command -v docker >/dev/null 2>&1; then
+        return 1
+    fi
+    if ! docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
+        log "hassio_dns 容器未运行，跳过 Corefile 修复"
         return 1
     fi
 
-    # 检查是否包含 Cloudflare DoT 端点
-    if ! grep -qE '1\.1\.1\.1|1\.0\.0\.1|cloudflare' "$coredns_json" 2>/dev/null; then
-        log "coredns.json 不含 Cloudflare 端点，无需替换 DoT"
+    # 检查是否需要修复
+    if is_corefile_already_fixed; then
+        log "hassio_dns 容器 /etc/corefile 已无 Cloudflare DoT，跳过修复"
         return 0
     fi
 
-    log "检测到 Cloudflare DoT fallback，替换为国内 DNS（223.5.5.5 / 119.29.29.29）..."
+    log "检测到 hassio_dns 容器 /etc/corefile 含 Cloudflare DoT，正在修复 ..."
 
-    # 备份
-    cp "$coredns_json" "${coredns_json}.bak" 2>/dev/null || true
+    # 备份当前 Corefile（容器内）
+    docker exec hassio_dns sh -c 'cp -f /etc/corefile /etc/corefile.bak 2>/dev/null || true' || true
 
-    # 替换 tls://1.1.1.1 → dns://223.5.5.5
-    # 替换 tls://1.0.0.1 → dns://119.29.29.29
-    # 这是关键：CoreDNS .:5553 用 Cloudflare DoT 作上游，国内被封
-    sed -i \
-        -e 's|tls://1\.1\.1\.1|dns://223.5.5.5|g' \
-        -e 's|tls://1\.0\.0\.1|dns://119.29.29.29|g' \
-        -e 's|tls://1\.1\.1\.2|dns://223.5.5.5|g' \
-        -e 's|tls://1\.0\.0\.2|dns://119.29.29.29|g' \
-        -e 's|tls://cloudflare-dns\.com|dns://223.5.5.5|g' \
-        "$coredns_json" 2>/dev/null || {
-            log "WARNING: sed 替换 DoT 失败，恢复备份"
-            mv "${coredns_json}.bak" "$coredns_json" 2>/dev/null || true
-            return 1
-        }
+    # 替换 Cloudflare DoT 为国内 DNS
+    # tls://1.1.1.1 → dns://223.5.5.5
+    # tls://1.0.0.1 → dns://119.29.29.29
+    # tls://cloudflare-dns.com → dns://223.5.5.5 (兜底)
+    if docker exec hassio_dns sh -c 'sed -i \
+        -e "s|tls://1\.1\.1\.1|dns://223.5.5.5|g" \
+        -e "s|tls://1\.0\.0\.1|dns://119.29.29.29|g" \
+        -e "s|tls://1\.1\.1\.2|dns://223.5.5.5|g" \
+        -e "s|tls://1\.0\.0\.2|dns://119.29.29.29|g" \
+        -e "s|tls://cloudflare-dns\.com|dns://223.5.5.5|g" \
+        /etc/corefile' 2>/dev/null; then
+        log "已替换 /etc/corefile 中的 Cloudflare DoT 为国内 DNS"
+    else
+        log "WARNING: 替换 /etc/corefile 失败"
+        return 1
+    fi
 
-    log "Cloudflare DoT 已替换为国内 DNS"
-    return 0
+    # 关键: 用 SIGHUP 让 CoreDNS 重新读取 Corefile（不重启容器）
+    # 这样 supervisor 不会重新生成 Corefile，修复持续生效。
+    # 如果 SIGHUP 失败，再退而用 s6-svc -h 重启服务。
+    if docker exec hassio_dns sh -c 'pkill -HUP coredns 2>/dev/null; sleep 1' 2>/dev/null; then
+        log "已 SIGHUP hassio_dns 容器内 coredns 让其重读 Corefile"
+        return 0
+    fi
+    # 兜底：用 s6-svc 重启服务（不重启容器）
+    if docker exec hassio_dns sh -c 's6-svc -h /run/service/coredns 2>/dev/null; sleep 1' 2>/dev/null; then
+        log "已通过 s6-svc -h 重启 hassio_dns 容器内 coredns"
+        return 0
+    fi
+    log "WARNING: 通知 CoreDNS 重读 Corefile 失败"
+    return 1
 }
 
 # 方案 A：通过 ha CLI 配置 DNS（推荐，CLI 内部已处理 token）
@@ -248,61 +272,28 @@ configure_via_ha_cli() {
         return 1
     fi
 
-    # 关键：先配置 host DNS，再重启 hassio_dns
-    # 这样 hassio_dns 重启时会读取新 locals (223.5.5.5/119.29.29.29)，而非路由器慢 DNS
-    # 注意：若 host DNS 配置失败，hassio_dns 重启后 locals 仍为 192.168.1.1 → 修复无效
+    # 关键：先配置 host DNS，再修复 Corefile
+    # 这样 hassio_dns 容器内 /etc/corefile 的 .:53 forward 已有正确的 fallback 路径
     configure_host_dns
 
-    # 重启 hassio_dns（带重试，避免 "Another job is running"）
-    local restart_ok=0
-    for i in $(seq 1 10); do
-        if docker exec hassio_cli ha dns restart 2>&1; then
-            log "hassio_dns 重启成功"
-            restart_ok=1
-            break
-        fi
-        log "WARNING: hassio_dns 重启失败，5s 后重试 ($i/10) ..."
-        sleep 5
-    done
-    if [ "$restart_ok" -ne 1 ]; then
-        log "WARNING: hassio_dns 经过 10 次重试仍无法重启"
-    fi
+    # 关键修复 (Build #45): 修复 hassio_dns 容器内 /etc/corefile 的 Cloudflare DoT
+    # 这是 Build #44 失败的核心根因。coredns.json 中不含 tls://1.1.1.1，
+    # Cloudflare DoT 硬编码在 hassio_dns 容器内 tempio 模板 /usr/share/tempio/corefile。
+    # 必须直接 docker exec 修改 /etc/corefile 并 SIGHUP coredns (不重启容器)。
+    fix_coredns_dot_fallback || log "WARNING: Corefile DoT 修复失败（hassio_dns 容器问题）"
 
-    # 修复 Cloudflare DoT fallback（国内封 Cloudflare DoT，导致 checkonline 超时）
-    # 必须放在 ha dns restart 之后：restart 会重新生成 coredns.json（此时仍有 Cloudflare），
-    # 然后我们直接修改 JSON 替换 Cloudflare 为国内 DNS。
-    # 注意：不能再用 ha dns restart，因为 supervisor 会从模板重新生成 JSON，覆盖我们的修复！
-    # 必须用 docker restart hassio_dns（只重启容器，读取已修改的文件，不触发重新生成）
-    if fix_coredns_dot_fallback; then
-        log "重新加载 hassio_dns 使 DoT 修复生效（docker restart，非 ha dns restart）..."
-        docker restart hassio_dns 2>/dev/null && {
-            log "hassio_dns 容器重启成功，DoT 修复已生效"
-            sleep 3  # 等待 CoreDNS 启动
-        } || log "WARNING: docker restart hassio_dns 失败"
-    fi
-
-    # 关键修复 (Build #44): 等 hassio_dns 完全健康（CoreDNS listening）后再 healthcheck
+    # 关键修复 (Build #43): 等 hassio_dns 完全健康（CoreDNS listening）后再 healthcheck
     # 否则 dockerd [resolver] 会发 checkonline → 127.0.0.1:53 connection refused
     # （hassio_dns 还在启动中）→ supervisor 立即判 No connectivity
-    # 此函数最多等 60s，覆盖 hassio_dns 启动到 CoreDNS 完全就绪的时间
     wait_for_hassio_dns_healthy || true
-
-    # 关键修复 (Build #44): 重启 dockerd，让它重新读 /etc/resolv.conf
-    # 此时 /etc/resolv.conf 已被 supervisor 改为 hassio_dns (127.0.0.1)
-    # 但 dockerd 启动时缓存的是 dhcp 路由器 DNS (192.168.1.1) → dockerd resolver
-    # 仍会发到 192.168.1.1:53 (国内慢) → supervisor 拉 homeassistant 镜像失败
-    # 重启 dockerd 是粗暴但有效的修复（supervisor 容器会随之重启，由 supervisor 自身 manage）
-    if [ -f /etc/docker/daemon.json ] && command -v systemctl >/dev/null 2>&1; then
-        log "重启 dockerd 让其重读 /etc/resolv.conf (hassio_dns 已就绪) ..."
-        systemctl restart docker 2>&1 | head -3 || log "WARNING: systemctl restart docker 失败"
-        sleep 8  # 等 dockerd 起来
-    fi
 
     # 关键修复 (Build #44): 重启 assismgr 让它重新读 /etc/resolv.conf
     # assismgr 启动时 (T=46s) /etc/resolv.conf 仍是 dhcp 路由器 DNS，
     # 即使后来 supervisor 改了 resolv.conf (T=115s)，assismgr 进程内的 DNS
     # 解析器已缓存旧的 DNS 列表，导致其 ping 检查一直 fail
     # 重启 assismgr 后它会读新的 resolv.conf → 用 hassio_dns 解析域名
+    # 注意 (Build #45): 不重启 dockerd（避免重启 supervisor 容器导致 hassio_dns
+    # 重新生成 Corefile 覆盖我们的修复）
     if command -v systemctl >/dev/null 2>&1; then
         log "重启 assismgr 服务让其重读 /etc/resolv.conf ..."
         systemctl restart assismgr 2>&1 | head -3 || log "WARNING: systemctl restart assismgr 失败"
@@ -334,7 +325,6 @@ configure_via_hassio_cli_curl() {
     local body='{"servers":["dns://223.5.5.5","dns://119.29.29.29"],"fallback":false}'
     if docker exec -e BODY="$body" hassio_cli sh -c 'curl -fsS -m 30 -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H "Content-Type: application/json" -d "$BODY" http://supervisor/dns/options' 2>&1; then
         log "Supervisor API 配置成功"
-        docker exec hassio_cli curl -fsS -m 30 -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" http://supervisor/dns/restart 2>&1 || true
         return 0
     fi
     return 1
@@ -355,14 +345,7 @@ configure_via_coredns_json() {
         printf '%s\n' '{"servers":["dns://223.5.5.5","dns://119.29.29.29"],"fallback":false,"version":"2026.07.11"}' > "$DNS_COREDNS_JSON"
     fi
 
-    log "coredns.json 已更新: $(cat $DNS_COREDNS_JSON 2>/dev/null)"
-
-    # 尝试通过 hassio_cli 重启 hassio_dns
-    if command -v docker >/dev/null 2>&1; then
-        if docker inspect --format '{{.State.Running}}' hassio_cli 2>/dev/null | grep -q true; then
-            docker exec hassio_cli ha dns restart 2>&1 || log "WARNING: 重启 hassio_dns 失败"
-        fi
-    fi
+    log "coredns.json 已更新"
     return 0
 }
 
@@ -376,6 +359,19 @@ main() {
         exit 0
     fi
 
+    # 关键修复 (Build #45): 用 flock 防止 nm-dispatcher 多个进程并发执行
+    # Build #44 失败的关键原因之一: NM 重命名 end0 → "Supervisor end0" 时
+    # 会触发 2 次 dispatcher 事件 (up + down)，导致 2 个 nm-dispatcher 进程
+    # 同时调用 ha dns restart，第二个进程拿到 JobGroupExecutionLimitExceeded。
+    # flock -n 16: 最多等 16s 拿锁，拿不到就立即跳过。
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$LOCK_FILE"
+        if ! flock -w 16 9; then
+            log "另一个 hassos-dns-cn-init 实例正在执行，跳过（避免并发）"
+            exit 0
+        fi
+    fi
+
     # 先配置 host DNS（无需等待 supervisor），让系统 / dockerd 尽早使用国内 DNS
     configure_host_dns
 
@@ -383,9 +379,9 @@ main() {
     wait_for_ipv4 || true
     wait_for_hassio_cli || true
 
-    if is_already_configured; then
-        log "国内 DNS 已配置，但仍需修复 Cloudflare DoT fallback 并重启 ..."
-        # 不跳过：即使 servers 正确，Cloudflare DoT 仍可能阻塞连通性检查
+    if is_already_configured && is_corefile_already_fixed; then
+        log "国内 DNS 已配置，hassio_dns 容器 /etc/corefile 也已修复，跳过"
+        exit 0
     fi
 
     # 方案 A: ha CLI
