@@ -14,18 +14,29 @@
 set -e
 
 SUPERVISOR_SOCK="/var/run/supervisor.sock"
-# Build #49 关键修复: 不再硬编码 192.168.1.1
-# 不同家庭 IP 网段不同: 192.168.0.1 / 192.168.1.1 / 10.0.0.1 / 192.168.2.1 等
-# Build #50 关键修复: 路由器 DNS (默认网关) 实测**不一定可达**
-#   - Build #48 日志显示 192.168.1.1:53 经常 i/o timeout (路由器 DNS 代理未响应)
-#   - 单一路由器上游 → supervisor 永久 'No Supervisor connectivity'
-# 改为「公共 DNS (119.29.29.29/223.5.5.5/8.8.8.8) + 路由器网关」多上游列表,
-# 由 CoreDNS 健康检测自动故障转移: 路由器可用走路由器, 不可用走公共 DNS。
-DNS_SERVERS=""  # 运行时由 init_dns_servers() 填充 (默认网关 IP, 仅作 ha dns info 标记)
-# Corefile 上游 DNS 列表 (dns:// 前缀, 空格分隔) - 多上游故障转移
-COREFILE_UPSTREAM_DNS=""  # 运行时由 init_dns_servers() 填充
-# 空格分隔的 IP 上游列表 (用于 ha dns options / coredns.json)
-UPSTREAM_LIST=""
+# Build #49/#50 教训: 不要把路由器网关 IP 写进 CoreDNS forward (会 loop FATAL)。
+# Build #51 重新设计 (见下方 DNS 上游设计): 只用全局固定的公共 DNS, 彻底移除网关检测。
+# ============================================================================
+# DNS 上游设计 (Build #51 重新设计, 关键根因修复)
+# ----------------------------------------------------------------------------
+# Build #49/#50 致命错误: 把路由器网关 IP (192.168.1.1) 直接写进 CoreDNS
+# '.:53' 的 forward 列表 -> 该网关在本网把查询反射回 172.30.32.3 (CoreDNS 自身)
+# -> 触发 CoreDNS plugin/loop FATAL -> CoreDNS 崩溃 -> supervisor 无法重启 ->
+# DNS 全死 -> 永久 'No Supervisor connectivity' -> 8123 永远 landingpage。
+#
+# 正确架构 (对齐 stock HA OS):
+#   - '.:53' forward 必须是 dns://127.0.0.11 (Docker 内嵌解析器, 自身不会 loop),
+#     它走 daemon.json 的 'dns' 字段 (公共 DNS), 绝不直连网关。
+#   - '.:5553' (supervisor 自用) 用公共 DNS (119.29.29.29/223.5.5.5/8.8.8.8),
+#     替换被墙的 CloudFlare DoT (tls://1.1.1.1)。
+#   - 公共 DNS 是**全局固定 IP**, 与家庭网段无关 -> 天然适配任意路由器/网段,
+#     彻底规避"不同家庭网段网关不同"的问题。
+#   - daemon.json 设 dns=公共DNS, 使 dockerd 与 127.0.0.11 都走公共 DNS
+#     (同时修复 dockerd 直接查已死路由器导致的 i/o timeout)。
+# ============================================================================
+DNS_SERVERS=""          # 保留变量 (ha dns info 幂等检查用, 见 is_already_configured)
+COREFILE_UPSTREAM_DNS="" # 运行时填充 (公共 DNS 列表)
+UPSTREAM_LIST=""         # 运行时填充 (空格分隔公共 DNS IP)
 DNS_COREDNS_JSON="/mnt/data/supervisor/dns/coredns.json"
 # flock 锁: 防止 nm-dispatcher 多个进程同时执行配置逻辑
 LOCK_FILE="/var/run/hassos-dns-cn-init.lock"
@@ -35,68 +46,36 @@ log() {
     logger -t hassos-dns-cn-init "$1" 2>/dev/null || true
 }
 
-# 自动检测默认网关 IP (适配任意家庭网段)
-# 优先级:
-#   1. ip route 拿 default via X.X.X.X
-#   2. nmcli 拿 end0 的 IP4.GATEWAY
-#   3. nmcli 拿 end0 的 IP4.DNS (DHCP 给的 DNS, 通常 = 路由器 IP)
-#   4. 兜底: 192.168.1.1 (最常见的家庭网段)
-get_default_gateway() {
-    local gw=""
-    # 方法 1: ip route
-    if command -v ip >/dev/null 2>&1; then
-        gw=$(ip -4 route show default 2>/dev/null | awk '/^default/ {for(i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}' | head -1)
-    fi
-    # 方法 2: nmcli 拿 IP4.GATEWAY
-    if [ -z "$gw" ] && command -v nmcli >/dev/null 2>&1; then
-        gw=$(nmcli -t -f IP4.GATEWAY device show end0 2>/dev/null | head -1)
-    fi
-    # 方法 3: nmcli 拿 IP4.DNS (DHCP 给的 DNS, 通常 = 路由器 IP)
-    if [ -z "$gw" ] && command -v nmcli >/dev/null 2>&1; then
-        gw=$(nmcli -t -f IP4.DNS device show end0 2>/dev/null | head -1 | cut -d: -f1)
-    fi
-    # 方法 4: 兜底
-    if [ -z "$gw" ]; then
-        gw="192.168.1.1"
-        log "WARNING: 无法自动检测默认网关, 使用兜底 192.168.1.1 (如果不对, 请手动设置)"
-    fi
-    echo "$gw"
-}
-
-# 公共 DNS 上游 (国内可达, 按优先级排列)
+# 公共 DNS 上游 (国内普遍可达, 全局固定 IP, 与家庭网段无关)
 #   119.29.29.29  DNSPod / 腾讯 (国内普遍可达)
 #   223.5.5.5     AliDNS / 阿里   (国内普遍可达)
 #   8.8.8.8       Google (兜底, 国内通常被阻断, 仅作最后尝试)
-# Build #50 关键: 不再只用默认网关 (路由器) 作唯一上游。本环境实测路由器 DNS
-# (192.168.1.1:53) 经常 i/o timeout, 单一路由器上游会导致 supervisor 永久
-# 'No Supervisor connectivity'。改为「公共 DNS + 路由器网关」多上游列表,
-# CoreDNS 自动健康检测并故障转移。
+# Build #51: 只用公共 DNS, 绝不包含路由器网关 IP。
+#   - 网关直连 CoreDNS forward 会触发 plugin/loop FATAL (见文件头说明)
+#   - 公共 DNS 是全局固定 IP, 天然适配任意家庭网段
 PUBLIC_DNS_LIST="119.29.29.29 223.5.5.5 8.8.8.8"
 
-# 生成 ha dns options / coredns.json 用的上游列表 (空格分隔 IP)
+# 生成 ha dns options / coredns.json 用的上游列表 (空格分隔 IP, 公共 DNS)
 build_upstream_list() {
-    local gw="$1"
-    echo "$PUBLIC_DNS_LIST $gw"
+    echo "$PUBLIC_DNS_LIST"
 }
 
-# 生成 CoreDNS forward 用的上游列表 (dns:// 前缀, 空格分隔)
+# 生成 CoreDNS forward 用的上游列表 (dns:// 前缀, 空格分隔, 公共 DNS)
 build_upstream_fmt() {
-    local gw="$1"
     local out=""
-    for s in $PUBLIC_DNS_LIST $gw; do
+    for s in $PUBLIC_DNS_LIST; do
         out="$out dns://$s"
     done
     echo "${out# }"
 }
 
-# 初始化 DNS_SERVERS / UPSTREAM_LIST / COREFILE_UPSTREAM_DNS (运行时检测)
+# 初始化运行时 DNS 变量 (公共 DNS, 无需网关检测)
+# Build #51: 不再运行时检测网关。公共 DNS 是全局固定 IP, 与网段无关。
 init_dns_servers() {
-    local gw=$(get_default_gateway)
-    DNS_SERVERS="$gw"
-    UPSTREAM_LIST=$(build_upstream_list "$gw")
-    COREFILE_UPSTREAM_DNS=$(build_upstream_fmt "$gw")
-    log "检测到默认网关: $gw (将作为 DNS 标记)"
-    log "Corefile 上游故障转移列表: $COREFILE_UPSTREAM_DNS"
+    DNS_SERVERS="119.29.29.29"
+    UPSTREAM_LIST=$(build_upstream_list)
+    COREFILE_UPSTREAM_DNS=$(build_upstream_fmt)
+    log "DNS 上游 (公共 DNS, 与家庭网段无关): $COREFILE_UPSTREAM_DNS"
 }
 
 # 配置 host DNS (systemd-resolved + NetworkManager)
@@ -234,7 +213,7 @@ wait_for_ipv4() {
 }
 
 # 幂等检查：通过 hassio_cli 容器调 ha dns info
-# Build #49: 改为检查运行时检测的 DNS_SERVERS (默认网关 IP)
+# Build #51: 检查公共 DNS (DNS_SERVERS=119.29.29.29, 全局固定 IP, 不含网关)
 is_already_configured() {
     if command -v docker >/dev/null 2>&1 && [ -n "$DNS_SERVERS" ]; then
         INFO=$(docker exec hassio_cli ha dns info 2>/dev/null || true)
@@ -246,10 +225,10 @@ is_already_configured() {
     return 1
 }
 
-# 检查 hassio_dns 容器内 /etc/corefile 是否已修复 (Cloudflare DoT 已被替换)
-# 关键修复 (Build #45): 之前只检查 coredns.json 是不够的，因为 Cloudflare DoT
-# 硬编码在 hassio_dns 容器内的 tempio 模板 /usr/share/tempio/corefile 中，
-# coredns.json 是动态数据（不含 tls://1.1.1.1）。
+# 检查 hassio_dns 容器内 /etc/corefile 是否已修复 (Cloudflare DoT 已被替换,
+# 且 '.:53' 不含网关/私有 IP)
+# 关键修复 (Build #45): Cloudflare DoT 硬编码在 hassio_dns 容器内的 tempio 模板
+# /usr/share/tempio/corefile 中, coredns.json 是动态数据 (不含 tls://1.1.1.1)。
 is_corefile_already_fixed() {
     if ! command -v docker >/dev/null 2>&1; then
         return 1
@@ -257,21 +236,23 @@ is_corefile_already_fixed() {
     if ! docker inspect --format '{{.State.Running}}' hassio_dns 2>/dev/null | grep -q true; then
         return 1
     fi
-    # 检查 hassio_dns 容器内的 /etc/corefile 是否还包含 Cloudflare DoT
+    # 检查 hassio_dns 容器内的 /etc/corefile 是否还包含 Cloudflare DoT (.:5553)
     if docker exec hassio_dns sh -c 'grep -qE "tls://1\.1\.1\.1|tls://1\.0\.0\.1|tls://cloudflare-dns\.com" /etc/corefile' 2>/dev/null; then
         return 1  # 仍有 Cloudflare DoT，需要修复
     fi
-    # 检查是否仍走 dockerd internal (127.0.0.11) 死循环
-    if docker exec hassio_dns sh -c 'grep -qE "forward \. dns://127\.0\.0\.11" /etc/corefile' 2>/dev/null; then
-        return 1  # 仍走 dockerd internal，需要修复
+    # 关键 (Build #51): 检查 '.:53' forward 是否含网关/私有 IP
+    # (dns://127.0.0.11 是 stock 正确值, 不算; 但网关 IP 直连会触发 loop FATAL)
+    if docker exec hassio_dns sh -c 'grep -qE "forward \. dns://(192\.168|10\.|172\.(1[0-9]|2[0-9]|3[01]))\." /etc/corefile' 2>/dev/null; then
+        return 1  # :53 含网关/私有 IP (loop 风险)，需要修复
     fi
     return 0  # 已修复
 }
 
-# 修复 hassio_dns 容器内 /etc/corefile 的 Cloudflare DoT + .:53 forward 死循环
-# Build #50 关键修复: 用「公共 DNS + 路由器网关」多上游故障转移列表替换,
-# 不再只用单一路由器 IP (实测 192.168.1.1:53 经常 i/o timeout)。
-# CoreDNS forward 支持多个上游, 自动健康检测并故障转移。
+# 修复 hassio_dns 容器内 /etc/corefile (Build #51 重新设计)
+# 只做两件事, 绝不把网关 IP 放进 '.:53' forward (那会触发 plugin/loop FATAL):
+#   1. '.:5553' 的 CloudFlare DoT (tls://1.1.1.1) -> 公共 DNS 列表
+#   2. '.:53' 若被旧版脚本写成网关/私有 IP -> 还原为 dns://127.0.0.11 (stock)
+# 公共 DNS 列表来自 PUBLIC_DNS_LIST (全局固定 IP, 与网段无关)
 fix_coredns_dot_fallback() {
     if ! command -v docker >/dev/null 2>&1; then
         return 1
@@ -281,42 +262,49 @@ fix_coredns_dot_fallback() {
         return 1
     fi
 
-    # 用运行时检测的故障转移上游列表
     local UPSTREAM_FMT="$COREFILE_UPSTREAM_DNS"
     if [ -z "$UPSTREAM_FMT" ]; then
-        UPSTREAM_FMT=$(build_upstream_fmt "$(get_default_gateway)")
+        UPSTREAM_FMT=$(build_upstream_fmt)
         COREFILE_UPSTREAM_DNS="$UPSTREAM_FMT"
     fi
-    log "Corefile 上游故障转移列表: $UPSTREAM_FMT"
+    log "Corefile 公共 DNS 上游: $UPSTREAM_FMT"
 
     # 备份当前 Corefile（容器内）
     docker exec hassio_dns sh -c 'cp -f /etc/corefile /etc/corefile.bak 2>/dev/null || true' || true
 
-    # 是否需要修复 (检测 Cloudflare DoT 或 .:53 forward 走 dockerd internal)
     local needs_fix=0
+    # (1) .:5553 含 CloudFlare DoT?
     if docker exec hassio_dns sh -c 'grep -qE "tls://1\.1\.1\.1|tls://1\.0\.0\.1|tls://cloudflare-dns\.com" /etc/corefile' 2>/dev/null; then
-        log "检测到 hassio_dns 容器 /etc/corefile 含 Cloudflare DoT"
+        log "检测到 hassio_dns 容器 /etc/corefile 含 CloudFlare DoT (.:5553)"
         needs_fix=1
     fi
-    if docker exec hassio_dns sh -c 'grep -qE "forward \. dns://127\.0\.0\.11" /etc/corefile' 2>/dev/null; then
-        log "检测到 hassio_dns 容器 /etc/corefile .:53 forward 走 dockerd internal (死循环源)"
+    # (2) .:53 含网关/私有 IP (loop 风险)?
+    if docker exec hassio_dns sh -c 'grep -qE "forward \. dns://(192\.168|10\.|172\.(1[0-9]|2[0-9]|3[01]))\." /etc/corefile' 2>/dev/null; then
+        log "检测到 hassio_dns 容器 /etc/corefile .:53 含网关/私有 IP (loop 风险)"
         needs_fix=1
     fi
 
     if [ "$needs_fix" -eq 0 ]; then
-        log "hassio_dns 容器 /etc/corefile 已修复 (无 Cloudflare DoT, 上游已是外部 DNS 列表)"
+        log "hassio_dns 容器 /etc/corefile 已正确 (.:5553 无 DoT, .:53 无网关)"
         return 0
     fi
 
     log "开始修复 hassio_dns 容器 /etc/corefile ..."
 
-    # 关键修复: 把 Corefile 中所有 'forward .' 行 (.:53 和 .:5553 两个 server block)
-    # 统一替换为多上游故障转移列表。用整行替换避免重复 (旧逻辑把 tls://1.1.1.1 和
-    # tls://1.0.0.1 都替换成同一 IP, 导致 'forward . dns://X dns://X' 重复)。
-    if docker exec hassio_dns sh -c "sed -i -E 's|^( *)forward \. .*|\1forward . ${UPSTREAM_FMT}|' /etc/corefile" 2>/dev/null; then
-        log "已替换 Corefile 所有 forward 为多上游故障转移列表: ${UPSTREAM_FMT}"
+    # (1) 仅替换 '.:5553' 的 CloudFlare DoT 行为公共 DNS 列表
+    #     (用 tls:// 前缀精确匹配 .:5553, 不动 .:53)
+    if docker exec hassio_dns sh -c "sed -i -E 's|^( *)forward \. tls://.*|\1forward . ${UPSTREAM_FMT}|' /etc/corefile" 2>/dev/null; then
+        log "已替换 .:5553 CloudFlare DoT 为公共 DNS: ${UPSTREAM_FMT}"
     else
-        log "WARNING: 替换 Corefile forward 失败"
+        log "WARNING: 替换 .:5553 失败"
+    fi
+
+    # (2) 若 .:53 被旧脚本写成网关/私有 IP, 还原为 dns://127.0.0.11 (stock, 绝不 loop)
+    #     注: 此时 .:5553 已是公共 DNS (上一步), 不会被本规则误伤
+    if docker exec hassio_dns sh -c "sed -i -E 's|^( *)forward \. dns://(192\.168|10\.|172\.(1[0-9]|2[0-9]|3[01]))\.[0-9]+\.[0-9]+.*|\1forward . dns://127.0.0.11|' /etc/corefile" 2>/dev/null; then
+        log "已确保 .:53 forward 为 dns://127.0.0.11 (stock, 无 loop)"
+    else
+        log "WARNING: 还原 .:53 失败"
     fi
 
     # 验证修复结果
@@ -324,7 +312,7 @@ fix_coredns_dot_fallback() {
         log "  Corefile forward: $line"
     done
 
-    # 关键: 用 SIGHUP 让 CoreDNS 重新读取 Corefile（不重启容器）
+    # 用 SIGHUP 让 CoreDNS 重新读取 Corefile（不重启容器）
     # 这样 supervisor 不会重新生成 Corefile，修复持续生效。
     if docker exec hassio_dns sh -c 'pkill -HUP coredns 2>/dev/null; sleep 1' 2>/dev/null; then
         log "已 SIGHUP hassio_dns 容器内 coredns 让其重读 Corefile"
@@ -358,7 +346,7 @@ configure_via_ha_cli() {
         log "WARNING: 禁用 fallback 失败"
     fi
 
-    # 设置多上游 DNS servers (公共 DNS + 路由器网关, CoreDNS 故障转移)
+    # 设置公共 DNS servers (全局固定 IP, 与家庭网段无关, 不含网关 -> 不 loop)
     local opts=""
     for s in $UPSTREAM_LIST; do
         opts="$opts --servers dns://$s"
@@ -426,7 +414,7 @@ configure_via_hassio_cli_curl() {
     fi
 
     # 在 hassio_cli 容器内执行 curl，自动获取 SUPERVISOR_TOKEN 环境变量
-    # Build #50: 用多上游列表 (公共 DNS + 路由器网关)
+    # Build #51: 用公共 DNS 列表 (不含网关)
     local servers_json=""
     for s in $UPSTREAM_LIST; do
         [ -n "$servers_json" ] && servers_json="$servers_json,"
@@ -441,7 +429,7 @@ configure_via_hassio_cli_curl() {
 }
 
 # 方案 C：直接修改 coredns.json + 写信号文件通知 supervisor
-# Build #49: 用运行时检测的 DNS_SERVERS (路由器 IP)
+# Build #51: 用公共 DNS 列表 (全局固定 IP, 不含网关)
 configure_via_coredns_json() {
     log "兜底方案：直接修改 $DNS_COREDNS_JSON ..."
     if [ ! -d "$(dirname "$DNS_COREDNS_JSON")" ]; then
@@ -449,7 +437,7 @@ configure_via_coredns_json() {
     fi
 
     if [ -z "$UPSTREAM_LIST" ]; then
-        UPSTREAM_LIST=$(build_upstream_list "$(get_default_gateway)")
+        UPSTREAM_LIST=$(build_upstream_list)
     fi
     local srv_json=""
     for s in $UPSTREAM_LIST; do
@@ -465,7 +453,7 @@ configure_via_coredns_json() {
         printf '%s\n' "{\"servers\":[$srv_json],\"fallback\":false,\"version\":\"2026.07.11\"}" > "$DNS_COREDNS_JSON"
     fi
 
-    log "coredns.json 已更新 (servers: ${DNS_SERVERS})"
+    log "coredns.json 已更新 (servers: 公共 DNS ${UPSTREAM_LIST})"
     return 0
 }
 
@@ -479,7 +467,7 @@ main() {
         exit 0
     fi
 
-    # 关键修复 (Build #49): 运行时检测默认网关 (适配任意家庭网段)
+    # Build #51: 初始化公共 DNS 变量 (不再检测网关)
     # 必须早于任何 DNS 配置调用, 让 DNS_SERVERS 和 COREFILE_UPSTREAM_DNS 有正确值
     init_dns_servers
 
@@ -531,7 +519,7 @@ main() {
     log "WARNING: 所有 API 方案失败，兜底写 coredns.json"
     configure_via_coredns_json
     log "完成 (via coredns.json fallback)"
-    log "用户可手动执行: ha dns options --fallback=false --servers dns://${DNS_SERVERS}"
+    log "用户可手动执行: ha dns options --fallback=false --servers dns://119.29.29.29 --servers dns://223.5.5.5 --servers dns://8.8.8.8"
 }
 
 main "$@"
