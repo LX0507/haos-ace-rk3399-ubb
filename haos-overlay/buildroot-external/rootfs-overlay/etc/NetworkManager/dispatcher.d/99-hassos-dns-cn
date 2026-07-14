@@ -3,8 +3,9 @@
 # 作为 hassos-dns-cn-init.service 的双保险：service 失败后，dispatcher 仍会在
 # 网络恢复时尝试重新配置。
 #
-# Build #48 关键修改: 不再强制 223.5.5.5/119.29.29.29 (用户 ISP 阻断)
-# 改用 192.168.1.1 (路由器 DNS, 唯一可达)
+# Build #49 关键修复: 不再硬编码 192.168.1.1
+# 不同家庭 IP 网段不同 (192.168.0.1/192.168.1.1/10.0.0.1/192.168.2.1 等)
+# 用运行时检测的默认网关 IP, 适配任意家庭网段
 
 INTERFACE="$1"
 ACTION="$2"
@@ -12,11 +13,26 @@ ACTION="$2"
 [ "$INTERFACE" = "end0" ] || exit 0
 [ "$ACTION" = "up" ] || [ "$ACTION" = "dhcp4-change" ] || exit 0
 
-# 立即配置 host DNS
-# Build #48: 改用 192.168.1.1 (路由器 DNS, 唯一可达)
-# 这是关键：hassio_dns 的 locals 会从 host DNS 读取；host DNS 快则容器 DNS 也快
-DNS_SERVERS="192.168.1.1"
+# 关键 (Build #49): 运行时自动检测默认网关 IP
+# 优先级: ip route > nmcli IP4.GATEWAY > nmcli IP4.DNS > 兜底 192.168.1.1
+DNS_SERVERS=""
+if command -v ip >/dev/null 2>&1; then
+    DNS_SERVERS=$(ip -4 route show default 2>/dev/null | awk '/^default/ {for(i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}' | head -1)
+fi
+if [ -z "$DNS_SERVERS" ] && command -v nmcli >/dev/null 2>&1; then
+    DNS_SERVERS=$(nmcli -t -f IP4.GATEWAY device show end0 2>/dev/null | head -1)
+fi
+if [ -z "$DNS_SERVERS" ] && command -v nmcli >/dev/null 2>&1; then
+    DNS_SERVERS=$(nmcli -t -f IP4.DNS device show end0 2>/dev/null | head -1 | cut -d: -f1)
+fi
+if [ -z "$DNS_SERVERS" ]; then
+    DNS_SERVERS="192.168.1.1"
+    logger -t hassos-dns-cn-dispatcher "WARNING: 无法自动检测默认网关, 使用兜底 192.168.1.1"
+fi
+logger -t hassos-dns-cn-dispatcher "检测到默认网关: $DNS_SERVERS (host DNS)"
 
+# 立即配置 host DNS
+# 这是关键：hassio_dns 的 locals 会从 host DNS 读取；host DNS 快则容器 DNS 也快
 if command -v resolvectl >/dev/null 2>&1; then
     resolvectl dns end0 $DNS_SERVERS 2>/dev/null || true
 fi

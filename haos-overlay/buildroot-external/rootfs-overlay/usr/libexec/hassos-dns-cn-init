@@ -14,13 +14,15 @@
 set -e
 
 SUPERVISOR_SOCK="/var/run/supervisor.sock"
-# Build #48 关键修复: 改用 192.168.1.1 (路由器 DNS, 唯一可达)
+# Build #49 关键修复: 不再硬编码 192.168.1.1
+# 不同家庭 IP 网段不同: 192.168.0.1 / 192.168.1.1 / 10.0.0.1 / 192.168.2.1 等
+# 路由器 DNS (默认网关) 一定可达, 因为 NM 通过路由器 DHCP 拿 IP, 路由器必须先可达
 # Build #47 根因: 223.5.5.5/119.29.29.29 在用户 ISP 网络下被阻断 53 端口 UDP 出向
 # → hassio_dns 转发到 dockerd → 223.5.5.5 → i/o timeout → 永久 No connectivity
-# 改用路由器 (192.168.1.1) 走 ISP DNS, 是国内家庭网络唯一可达的 DNS
-DNS_SERVERS="192.168.1.1"
+# 用运行时检测的路由器 IP (默认网关) 作为 DNS, 走 ISP 内部网络, 一定可达
+DNS_SERVERS=""  # 运行时由 init_dns_servers() 填充 (get_default_gateway)
 # Corefile 上游 DNS (IP 直连, 绕过 dockerd 死循环)
-COREFILE_UPSTREAM_DNS="192.168.1.1"
+COREFILE_UPSTREAM_DNS=""  # 运行时由 init_dns_servers() 填充
 DNS_COREDNS_JSON="/mnt/data/supervisor/dns/coredns.json"
 # flock 锁: 防止 nm-dispatcher 多个进程同时执行配置逻辑
 LOCK_FILE="/var/run/hassos-dns-cn-init.lock"
@@ -28,6 +30,42 @@ LOCK_FILE="/var/run/hassos-dns-cn-init.lock"
 log() {
     echo "[hassos-dns-cn-init] $1"
     logger -t hassos-dns-cn-init "$1" 2>/dev/null || true
+}
+
+# 自动检测默认网关 IP (适配任意家庭网段)
+# 优先级:
+#   1. ip route 拿 default via X.X.X.X
+#   2. nmcli 拿 end0 的 IP4.GATEWAY
+#   3. nmcli 拿 end0 的 IP4.DNS (DHCP 给的 DNS, 通常 = 路由器 IP)
+#   4. 兜底: 192.168.1.1 (最常见的家庭网段)
+get_default_gateway() {
+    local gw=""
+    # 方法 1: ip route
+    if command -v ip >/dev/null 2>&1; then
+        gw=$(ip -4 route show default 2>/dev/null | awk '/^default/ {for(i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}' | head -1)
+    fi
+    # 方法 2: nmcli 拿 IP4.GATEWAY
+    if [ -z "$gw" ] && command -v nmcli >/dev/null 2>&1; then
+        gw=$(nmcli -t -f IP4.GATEWAY device show end0 2>/dev/null | head -1)
+    fi
+    # 方法 3: nmcli 拿 IP4.DNS (DHCP 给的 DNS, 通常 = 路由器 IP)
+    if [ -z "$gw" ] && command -v nmcli >/dev/null 2>&1; then
+        gw=$(nmcli -t -f IP4.DNS device show end0 2>/dev/null | head -1 | cut -d: -f1)
+    fi
+    # 方法 4: 兜底
+    if [ -z "$gw" ]; then
+        gw="192.168.1.1"
+        log "WARNING: 无法自动检测默认网关, 使用兜底 192.168.1.1 (如果不对, 请手动设置)"
+    fi
+    echo "$gw"
+}
+
+# 初始化 DNS_SERVERS 和 COREFILE_UPSTREAM_DNS (运行时检测)
+init_dns_servers() {
+    local gw=$(get_default_gateway)
+    DNS_SERVERS="$gw"
+    COREFILE_UPSTREAM_DNS="$gw"
+    log "检测到默认网关: $gw (将作为 DNS_SERVERS 和 Corefile 上游)"
 }
 
 # 配置 host DNS (systemd-resolved + NetworkManager)
@@ -162,11 +200,12 @@ wait_for_ipv4() {
 }
 
 # 幂等检查：通过 hassio_cli 容器调 ha dns info
+# Build #49: 改为检查运行时检测的 DNS_SERVERS (默认网关 IP)
 is_already_configured() {
-    if command -v docker >/dev/null 2>&1; then
+    if command -v docker >/dev/null 2>&1 && [ -n "$DNS_SERVERS" ]; then
         INFO=$(docker exec hassio_cli ha dns info 2>/dev/null || true)
-        if echo "$INFO" | grep -q "192.168.1.1"; then
-            log "国内 DNS 已配置 (hassio_cli ha dns info)"
+        if echo "$INFO" | grep -q "$DNS_SERVERS"; then
+            log "DNS 已配置为 ${DNS_SERVERS} (hassio_cli ha dns info)"
             return 0
         fi
     fi
@@ -192,11 +231,11 @@ is_corefile_already_fixed() {
 }
 
 # 修复 hassio_dns 容器内 /etc/corefile 的 Cloudflare DoT + .:53 forward 死循环
-# Build #48 关键修复:
+# Build #49 关键修复: 用运行时检测的默认网关 IP (适配任意家庭网段)
 # 1. .:5553 Cloudflare DoT 替换 (Build #45 修复, 国内被封)
-# 2. .:53 forward 替换: 'forward . dns://127.0.0.11' → 'forward . dns://192.168.1.1'
+# 2. .:53 forward 替换: 'forward . dns://127.0.0.11' → 'forward . dns://<路由器 IP>'
 #    (Build #47 根因, .:53 forward 走 dockerd → daemon.json dns [223.5.5.5] → timeout)
-# 3. 修复后 IP 直连 192.168.1.1 (路由器 DNS), 绕过 dockerd 死循环
+# 3. 修复后 IP 直连路由器, 绕过 dockerd 死循环
 fix_coredns_dot_fallback() {
     if ! command -v docker >/dev/null 2>&1; then
         return 1
@@ -205,6 +244,16 @@ fix_coredns_dot_fallback() {
         log "hassio_dns 容器未运行，跳过 Corefile 修复"
         return 1
     fi
+
+    # 关键 (Build #49): 用运行时检测的路由器 IP (默认网关)
+    # 适配任意家庭网段 (192.168.0.1/192.168.1.1/10.0.0.1/192.168.2.1 等)
+    local UPSTREAM_DNS="$COREFILE_UPSTREAM_DNS"
+    if [ -z "$UPSTREAM_DNS" ]; then
+        # 兜底: 调用 get_default_gateway 重新检测
+        UPSTREAM_DNS=$(get_default_gateway)
+        COREFILE_UPSTREAM_DNS="$UPSTREAM_DNS"
+    fi
+    log "Corefile 上游 DNS (路由器 IP): $UPSTREAM_DNS"
 
     # 备份当前 Corefile（容器内）
     docker exec hassio_dns sh -c 'cp -f /etc/corefile /etc/corefile.bak 2>/dev/null || true' || true
@@ -228,30 +277,31 @@ fix_coredns_dot_fallback() {
     log "开始修复 hassio_dns 容器 /etc/corefile ..."
 
     # 关键修复 #1: .:53 forward 替换 (Build #48 核心)
-    # 'forward . dns://127.0.0.11' → 'forward . dns://192.168.1.1'
+    # 'forward . dns://127.0.0.11' → 'forward . dns://<路由器 IP>'
     # 这是 Build #47 supervisor No connectivity 的根因:
     # hassio_dns 把所有 DNS query 转发到 dockerd internal (127.0.0.11) →
     # dockerd 用 daemon.json dns [223.5.5.5] → 用户 ISP 阻断 → 永久 timeout
-    if docker exec hassio_dns sh -c 'sed -i \
-        -e "s|forward \. dns://127\.0\.0\.11|forward . dns://192.168.1.1|g" \
-        /etc/corefile' 2>/dev/null; then
-        log "已替换 .:53 forward 为 IP 直连 192.168.1.1 (绕过 dockerd 死循环)"
+    # 关键 (Build #49): docker exec 用双引号让 ${UPSTREAM_DNS} 在 host shell 展开
+    if docker exec hassio_dns sh -c "sed -i \
+        -e 's|forward \. dns://127\.0\.0\.11|forward . dns://${UPSTREAM_DNS}|g' \
+        /etc/corefile" 2>/dev/null; then
+        log "已替换 .:53 forward 为 IP 直连 ${UPSTREAM_DNS} (绕过 dockerd 死循环)"
     else
         log "WARNING: 替换 .:53 forward 失败"
     fi
 
     # 关键修复 #2: .:5553 Cloudflare DoT 替换 (Build #45 修复)
-    # 'tls://1.1.1.1' → 'dns://192.168.1.1'
-    # 'tls://1.0.0.1' → 'dns://192.168.1.1' (兜底)
-    # 'tls://cloudflare-dns.com' → 'dns://192.168.1.1' (兜底)
-    if docker exec hassio_dns sh -c 'sed -i \
-        -e "s|tls://1\.1\.1\.1|dns://192.168.1.1|g" \
-        -e "s|tls://1\.0\.0\.1|dns://192.168.1.1|g" \
-        -e "s|tls://1\.1\.1\.2|dns://192.168.1.1|g" \
-        -e "s|tls://1\.0\.0\.2|dns://192.168.1.1|g" \
-        -e "s|tls://cloudflare-dns\.com|dns://192.168.1.1|g" \
-        /etc/corefile' 2>/dev/null; then
-        log "已替换 .:5553 Cloudflare DoT 为国内 DNS"
+    # 'tls://1.1.1.1' → 'dns://<路由器 IP>'
+    # 'tls://1.0.0.1' → 'dns://<路由器 IP>' (兜底)
+    # 'tls://cloudflare-dns.com' → 'dns://<路由器 IP>' (兜底)
+    if docker exec hassio_dns sh -c "sed -i \
+        -e 's|tls://1\\.1\\.1\\.1|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://1\\.0\\.0\\.1|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://1\\.1\\.1\\.2|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://1\\.0\\.0\\.2|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://cloudflare-dns\\.com|dns://${UPSTREAM_DNS}|g' \
+        /etc/corefile" 2>/dev/null; then
+        log "已替换 .:5553 Cloudflare DoT 为 IP 直连 ${UPSTREAM_DNS}"
     else
         log "WARNING: 替换 Cloudflare DoT 失败"
     fi
@@ -326,29 +376,43 @@ configure_via_ha_cli() {
     # Build #46 根因: supervisor 容器自己的 DNS 解析走 hassio_dns (172.30.32.3)
     # → hassio_dns .:53 forward → dockerd internal (127.0.0.11) → daemon.json dns
     # → 127.0.0.1 (refused) / 223.5.5.5 (i/o timeout 在容器内部)
-    # 修复: 直接让 supervisor 容器 /etc/resolv.conf 指向国内 DNS，绕开 hassio_dns
+    # 修复: 直接让 supervisor 容器 /etc/resolv.conf 指向路由器 IP (默认网关)
+    # Build #49 适配任意家庭网段: 用 $DNS_SERVERS (运行时检测的默认网关)
     # 注意: supervisor 会**定期重写** /etc/resolv.conf，每次 hassio_dns restart
     # 时也会重写，所以这个修复是"被覆盖"时立即重做。
     if command -v docker >/dev/null 2>&1; then
         if docker inspect --format '{{.State.Running}}' hassio_supervisor 2>/dev/null | grep -q true; then
+            # Build #49 关键: 写 watch 脚本前先把 $DNS_SERVERS 写入临时文件
+            # watch.sh 在 nohup 启动的 subshell 中运行, 不会继承父 shell 局部变量
+            # 所以必须用临时文件传递 DNS_SERVERS 值
+            echo "$DNS_SERVERS" > /tmp/hassos-dns-cn-resolv-gateway
+            log "已写入 supervisor /etc/resolv.conf watch 用的网关 IP: $DNS_SERVERS"
+
             # 写一个 watch 脚本：监控 supervisor 容器的 /etc/resolv.conf，
-            # 一旦发现被改成 127.0.0.1 (hassio_dns) 就立即覆盖为国内 DNS
-            # 用 nohup 启动后台进程
+            # 一旦发现被改成 127.0.0.1 (hassio_dns) 就立即覆盖为路由器 IP
+            # Build #49: 用 'WATCH_EOF' 单引号, 防止 host shell 展开 $DNS_SERVERS
+            # (我们用临时文件传值, watch.sh 在内部 cat 临时文件)
             cat > /tmp/hassos-dns-cn-supervisor-resolv-watch.sh << 'WATCH_EOF'
 #!/bin/sh
 # 后台监控 supervisor 容器 /etc/resolv.conf，
+# Build #49: 路由器 IP 从 /tmp/hassos-dns-cn-resolv-gateway 读取 (host 端写入)
+GATEWAY_IP=""
+if [ -f /tmp/hassos-dns-cn-resolv-gateway ]; then
+    GATEWAY_IP=$(cat /tmp/hassos-dns-cn-resolv-gateway 2>/dev/null | tr -d '[:space:]')
+fi
+if [ -z "$GATEWAY_IP" ]; then
+    GATEWAY_IP="192.168.1.1"  # 兜底
+fi
 # 每次 hassio_dns 启动/重启后 supervisor 会重写 /etc/resolv.conf，
-# 把 nameserver 改为 127.0.0.1 (hassio_dns)，我们需要立即覆盖
+# 把 nameserver 改为 127.0.0.1 (hassio_dns)，我们需要立即覆盖为路由器 IP
 while true; do
     if command -v docker >/dev/null 2>&1; then
         if docker inspect --format '{{.State.Running}}' hassio_supervisor 2>/dev/null | grep -q true; then
             CURRENT=$(docker exec hassio_supervisor cat /etc/resolv.conf 2>/dev/null | grep '^nameserver' | head -1)
             if [ -n "$CURRENT" ] && echo "$CURRENT" | grep -q "127.0.0.1"; then
-                # 覆盖为路由器 DNS (Build #48)
-                docker exec hassio_supervisor sh -c 'cat > /etc/resolv.conf <<EOF
-nameserver 192.168.1.1
-EOF
-' 2>/dev/null && logger -t hassos-dns-cn-resolv-watch "已覆盖 supervisor 容器 /etc/resolv.conf 为路由器 DNS"
+                # 覆盖为路由器 IP (Build #49 适配任意家庭网段)
+                docker exec hassio_supervisor sh -c "printf 'nameserver ${GATEWAY_IP}\\n' > /etc/resolv.conf" 2>/dev/null \
+                    && logger -t hassos-dns-cn-resolv-watch "已覆盖 supervisor 容器 /etc/resolv.conf 为路由器 IP (${GATEWAY_IP})"
             fi
         fi
     fi
@@ -358,11 +422,9 @@ WATCH_EOF
             chmod +x /tmp/hassos-dns-cn-supervisor-resolv-watch.sh
             nohup /tmp/hassos-dns-cn-supervisor-resolv-watch.sh >/dev/null 2>&1 &
             log "已启动 supervisor /etc/resolv.conf 监控后台进程 (PID: $!)"
-            # 立即执行一次
-            docker exec hassio_supervisor sh -c 'cat > /etc/resolv.conf <<EOF
-nameserver 192.168.1.1
-EOF
-' 2>/dev/null || log "WARNING: 立即覆盖 supervisor /etc/resolv.conf 失败"
+            # 立即执行一次: 写入路由器 IP (Build #49)
+            docker exec hassio_supervisor sh -c "printf 'nameserver ${DNS_SERVERS}\\n' > /etc/resolv.conf" 2>/dev/null \
+                || log "WARNING: 立即覆盖 supervisor /etc/resolv.conf 失败"
         fi
     fi
 
@@ -401,7 +463,8 @@ configure_via_hassio_cli_curl() {
     fi
 
     # 在 hassio_cli 容器内执行 curl，自动获取 SUPERVISOR_TOKEN 环境变量
-    local body='{"servers":["dns://192.168.1.1"],"fallback":false}'
+    # Build #49: 用运行时检测的路由器 IP (默认网关)
+    local body="{\"servers\":[\"dns://${DNS_SERVERS}\"],\"fallback\":false}"
     if docker exec -e BODY="$body" hassio_cli sh -c 'curl -fsS -m 30 -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" -H "Content-Type: application/json" -d "$BODY" http://supervisor/dns/options' 2>&1; then
         log "Supervisor API 配置成功"
         return 0
@@ -410,21 +473,26 @@ configure_via_hassio_cli_curl() {
 }
 
 # 方案 C：直接修改 coredns.json + 写信号文件通知 supervisor
+# Build #49: 用运行时检测的 DNS_SERVERS (路由器 IP)
 configure_via_coredns_json() {
     log "兜底方案：直接修改 $DNS_COREDNS_JSON ..."
     if [ ! -d "$(dirname "$DNS_COREDNS_JSON")" ]; then
         mkdir -p "$(dirname "$DNS_COREDNS_JSON")"
     fi
 
-    if [ -f "$DNS_COREDNS_JSON" ] && command -v jq >/dev/null 2>&1; then
-        # 保留其他字段，仅修改 servers 和 fallback
-        jq '.servers = ["dns://192.168.1.1"] | .fallback = false' "$DNS_COREDNS_JSON" > "${DNS_COREDNS_JSON}.tmp" \
-            && mv "${DNS_COREDNS_JSON}.tmp" "$DNS_COREDNS_JSON"
-    else
-        printf '%s\n' '{"servers":["dns://192.168.1.1"],"fallback":false,"version":"2026.07.11"}' > "$DNS_COREDNS_JSON"
+    if [ -z "$DNS_SERVERS" ]; then
+        DNS_SERVERS=$(get_default_gateway)
     fi
 
-    log "coredns.json 已更新"
+    if [ -f "$DNS_COREDNS_JSON" ] && command -v jq >/dev/null 2>&1; then
+        # 保留其他字段，仅修改 servers 和 fallback
+        jq --arg srv "dns://${DNS_SERVERS}" '.servers = [$srv] | .fallback = false' "$DNS_COREDNS_JSON" > "${DNS_COREDNS_JSON}.tmp" \
+            && mv "${DNS_COREDNS_JSON}.tmp" "$DNS_COREDNS_JSON"
+    else
+        printf '%s\n' "{\"servers\":[\"dns://${DNS_SERVERS}\"],\"fallback\":false,\"version\":\"2026.07.11\"}" > "$DNS_COREDNS_JSON"
+    fi
+
+    log "coredns.json 已更新 (servers: ${DNS_SERVERS})"
     return 0
 }
 
@@ -437,6 +505,10 @@ main() {
         log "非 end0 接口 ($1)，跳过"
         exit 0
     fi
+
+    # 关键修复 (Build #49): 运行时检测默认网关 (适配任意家庭网段)
+    # 必须早于任何 DNS 配置调用, 让 DNS_SERVERS 和 COREFILE_UPSTREAM_DNS 有正确值
+    init_dns_servers
 
     # 关键修复 (Build #45): 用 flock 防止 nm-dispatcher 多个进程并发执行
     # Build #44 失败的关键原因之一: NM 重命名 end0 → "Supervisor end0" 时
@@ -486,7 +558,7 @@ main() {
     log "WARNING: 所有 API 方案失败，兜底写 coredns.json"
     configure_via_coredns_json
     log "完成 (via coredns.json fallback)"
-    log "用户可手动执行: ha dns options --fallback=false --servers dns://192.168.1.1"
+    log "用户可手动执行: ha dns options --fallback=false --servers dns://${DNS_SERVERS}"
 }
 
 main "$@"

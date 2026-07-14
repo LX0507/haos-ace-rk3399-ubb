@@ -9,12 +9,34 @@
 set -e
 
 LOCK_FILE="/var/run/hassos-dns-cn-init-recheck.lock"
-# Build #48 关键修改: 改用 192.168.1.1 (路由器 DNS, 唯一可达)
-DNS_SERVERS="192.168.1.1"
+# Build #49 关键修复: 不再硬编码 192.168.1.1
+# 不同家庭 IP 网段不同: 192.168.0.1/192.168.1.1/10.0.0.1/192.168.2.1 等
+# 用运行时检测的默认网关 IP, 适配任意家庭网段
+DNS_SERVERS=""
 
 log() {
     echo "[hassos-dns-cn-init-recheck] $1"
     logger -t hassos-dns-cn-init-recheck "$1" 2>/dev/null || true
+}
+
+# 自动检测默认网关 IP (适配任意家庭网段)
+# 同 hassos-dns-cn-init 的 get_default_gateway, 这里复制一份以避免依赖
+get_default_gateway() {
+    local gw=""
+    if command -v ip >/dev/null 2>&1; then
+        gw=$(ip -4 route show default 2>/dev/null | awk '/^default/ {for(i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}' | head -1)
+    fi
+    if [ -z "$gw" ] && command -v nmcli >/dev/null 2>&1; then
+        gw=$(nmcli -t -f IP4.GATEWAY device show end0 2>/dev/null | head -1)
+    fi
+    if [ -z "$gw" ] && command -v nmcli >/dev/null 2>&1; then
+        gw=$(nmcli -t -f IP4.DNS device show end0 2>/dev/null | head -1 | cut -d: -f1)
+    fi
+    if [ -z "$gw" ]; then
+        gw="192.168.1.1"
+        log "WARNING: 无法自动检测默认网关, 使用兜底 192.168.1.1"
+    fi
+    echo "$gw"
 }
 
 # 检查 hassio_dns 容器内 /etc/corefile 是否已修复 (Cloudflare DoT 已被替换)
@@ -32,6 +54,7 @@ is_corefile_already_fixed() {
 }
 
 # 修复 hassio_dns 容器内 /etc/corefile 的 Cloudflare DoT 硬编码
+# Build #49: 用运行时检测的路由器 IP (默认网关) - 适配任意家庭网段
 fix_coredns_dot_fallback() {
     if ! command -v docker >/dev/null 2>&1; then
         return 1
@@ -40,6 +63,13 @@ fix_coredns_dot_fallback() {
         log "hassio_dns 容器未运行，跳过 Corefile 修复"
         return 1
     fi
+
+    # Build #49: 用运行时检测的路由器 IP
+    if [ -z "$DNS_SERVERS" ]; then
+        DNS_SERVERS=$(get_default_gateway)
+    fi
+    local UPSTREAM_DNS="$DNS_SERVERS"
+    log "Corefile 上游 DNS (路由器 IP): $UPSTREAM_DNS"
 
     if is_corefile_already_fixed; then
         log "hassio_dns 容器 /etc/corefile 已修复，跳过"
@@ -51,15 +81,16 @@ fix_coredns_dot_fallback() {
 
     # Build #48 关键修复: 同时修复 .:53 forward (走 127.0.0.11 死循环)
     # 和 .:5553 Cloudflare DoT (国内被封)
-    if docker exec hassio_dns sh -c 'sed -i \
-        -e "s|forward \. dns://127\.0\.0\.11|forward . dns://192.168.1.1|g" \
-        -e "s|tls://1\.1\.1\.1|dns://192.168.1.1|g" \
-        -e "s|tls://1\.0\.0\.1|dns://192.168.1.1|g" \
-        -e "s|tls://1\.1\.1\.2|dns://192.168.1.1|g" \
-        -e "s|tls://1\.0\.0\.2|dns://192.168.1.1|g" \
-        -e "s|tls://cloudflare-dns\.com|dns://192.168.1.1|g" \
-        /etc/corefile' 2>/dev/null; then
-        log "已替换 /etc/corefile (.:53 forward + .:5553 Cloudflare DoT) 为路由器 DNS"
+    # Build #49: 用双引号让 host shell 展开 ${UPSTREAM_DNS}
+    if docker exec hassio_dns sh -c "sed -i \
+        -e 's|forward \. dns://127\.0\.0\.11|forward . dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://1\\.1\\.1\\.1|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://1\\.0\\.0\\.1|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://1\\.1\\.1\\.2|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://1\\.0\\.0\\.2|dns://${UPSTREAM_DNS}|g' \
+        -e 's|tls://cloudflare-dns\\.com|dns://${UPSTREAM_DNS}|g' \
+        /etc/corefile" 2>/dev/null; then
+        log "已替换 /etc/corefile (.:53 forward + .:5553 Cloudflare DoT) 为路由器 IP ${UPSTREAM_DNS}"
     else
         log "WARNING: 替换 /etc/corefile 失败"
         return 1
@@ -134,6 +165,10 @@ if command -v flock >/dev/null 2>&1; then
         exit 0
     fi
 fi
+
+# Build #49: 运行时检测默认网关 (适配任意家庭网段)
+DNS_SERVERS=$(get_default_gateway)
+log "检测到默认网关: ${DNS_SERVERS} (将作为 DNS_SERVERS 和 Corefile 上游)"
 
 # 等待 hassio_cli 容器就绪
 for i in $(seq 1 60); do
