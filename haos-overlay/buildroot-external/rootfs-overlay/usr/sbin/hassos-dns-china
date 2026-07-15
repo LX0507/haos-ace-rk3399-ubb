@@ -1,0 +1,39 @@
+#!/bin/sh
+# hassos-dns-china — 将 plugin-dns(hassio_dns / CoreDNS) 的上游 DNS 显式指向
+# 中国可达的公共 DNS，绕开 Cloudflare DoT(1.1.1.1:853) 在国内被墙导致的
+# "No Supervisor connectivity"（supervisor 无法解析 checkonline.home-assistant.io）。
+#
+# 说明：
+#   - 上游 NetworkManager 连接(end0-china-dns)已把主机 DNS 指向公共 DNS，
+#     但 supervisor 读取主机 DNS 后交给 plugin-dns 时，仍可能把 1.1.1.1 升级为 DoT。
+#   - 此处用官方 `ha dns options` API 直接、持久地设定 plugin-dns 上游，
+#     写入 /mnt/data，重启后依然生效（与 NM 修改互补，双重保险）。
+#   - 不写任何自定义 Corefile、不修改 CoreDNS forward、不引入回环。
+set -u
+
+SERVERS="dns://119.29.29.29 dns://223.5.5.5 dns://114.114.114.114"
+
+wait_for_ha() {
+    # 等待 supervisor CLI 可用（最多 ~5 分钟）
+    i=0
+    while [ "$i" -lt 60 ]; do
+        if command -v ha >/dev/null 2>&1 && ha dns info >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 5
+        i=$((i + 1))
+    done
+    return 1
+}
+
+if wait_for_ha; then
+    # 幂等：每次启动重设一次，确保上游为公共 DNS（不为 Cloudflare）
+    if ha dns options --servers $SERVERS >/dev/null 2>&1; then
+        echo "[hassos-dns-china] plugin-dns 上游已设为公共 DNS: $SERVERS"
+    else
+        echo "[hassos-dns-china] ha dns options 执行失败，依赖 NM 主机 DNS 兜底"
+    fi
+else
+    echo "[hassos-dns-china] 等待 supervisor 超时，跳过本次设置（下次启动重试）"
+fi
+exit 0

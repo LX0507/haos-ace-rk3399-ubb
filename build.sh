@@ -152,13 +152,22 @@ echo "✅ overlay 合并完成"
 echo "🔧 修正关键脚本权限 ..."
 chmod +x \
     "operating-system/buildroot-external/rootfs-overlay/usr/sbin/hassos-supervisor" \
+    "operating-system/buildroot-external/rootfs-overlay/usr/sbin/hassos-dns-china" \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-ensure-files" \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-log-capture" \
     2>/dev/null || true
 # NetworkManager 连接文件必须 0600，否则 NM 拒绝加载（导致公共 DNS 兜底不生效）
 chmod 600 \
-    "operating-system/buildroot-external/rootfs-overlay/etc/NetworkManager/system-connections/end0-dns-fallback.nmconnection" \
+    "operating-system/buildroot-external/rootfs-overlay/etc/NetworkManager/system-connections/end0-china-dns.nmconnection" \
     2>/dev/null || true
+# 启用 hassos-dns-china 服务（将 plugin-dns 上游钉死为公共 DNS，绕开 Cloudflare DoT）。
+# 优先用符号链接；Windows 本地构建无法创建符号链接时退化为复制（同样可启用）。
+ROOTFS_WANTS="operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$ROOTFS_WANTS"
+if [ -f "operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/hassos-dns-china.service" ]; then
+    ln -sf "../hassos-dns-china.service" "$ROOTFS_WANTS/hassos-dns-china.service" 2>/dev/null \
+        || cp -f "operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/hassos-dns-china.service" "$ROOTFS_WANTS/hassos-dns-china.service"
+fi
 echo "✅ 权限修正完成"
 
 # ============================================================

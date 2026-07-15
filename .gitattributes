@@ -17,3 +17,7 @@
 hassos-supervisor text eol=lf
 haos-ensure-files text eol=lf
 haos-log-capture text eol=lf
+hassos-dns-china text eol=lf
+
+# 无扩展名的 NetworkManager 连接文件, 强制 LF (CRLF 会导致 NM 拒绝加载)
+end0-china-dns.nmconnection text eol=lf

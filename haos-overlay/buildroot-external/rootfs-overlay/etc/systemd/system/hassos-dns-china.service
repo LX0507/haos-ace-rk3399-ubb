@@ -1,0 +1,12 @@
+[Unit]
+Description=Set China-friendly upstream DNS for Home Assistant plugin-dns
+After=hassos-supervisor.service
+Wants=hassos-supervisor.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/hassos-dns-china
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
