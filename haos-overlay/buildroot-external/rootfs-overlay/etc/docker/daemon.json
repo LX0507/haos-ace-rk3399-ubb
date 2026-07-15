@@ -5,11 +5,6 @@
     },
     "data-root": "/mnt/data/docker",
     "bip": "172.30.232.1/23",
-    "dns": [
-        "119.29.29.29",
-        "223.5.5.5",
-        "8.8.8.8"
-    ],
     "registry-mirrors": [
         "https://docker.m.daocloud.io",
         "https://docker.1ms.run",

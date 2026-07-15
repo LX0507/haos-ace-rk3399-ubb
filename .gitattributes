@@ -12,3 +12,8 @@
 *.yaml text eol=lf
 *.yml text eol=lf
 *.txt text eol=lf
+
+# 无扩展名的可执行脚本 (rootfs-overlay 覆盖 stock HAOS 脚本), 强制 LF
+hassos-supervisor text eol=lf
+haos-ensure-files text eol=lf
+haos-log-capture text eol=lf
