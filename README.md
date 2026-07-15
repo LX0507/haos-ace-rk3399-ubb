@@ -49,7 +49,7 @@
 ```
 U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd init
 → mount partitions → overlay init
-→ NetworkManager（DHCP 获取路由器下发的 DNS，不做任何自定义改写）
+→ NetworkManager（DHCP 获取路由器 DNS 为主，并追加国内公共 DNS 119.29.29.29/223.5.5.5/114.114.114.114 作兜底，解决部分路由器对 Cloudflare 域名解析超时）
 → Docker/containerd → Supervisor（`hassos-supervisor` 拉取镜像：版本源 Gitee 优先/官方回退，镜像 ghcr.io 优先/国内 ghcr 镜像回退）
 → HA Core（连通性过关后拉取 `ghcr.io` 镜像，landingpage → 完整镜像）
 ```
@@ -178,7 +178,9 @@ haos-ace-rk3399-ubb/
 │           ├── etc/
 │           │   ├── docker/daemon.json          # Docker 配置 (registry-mirrors, 无 dns 字段)
 │           │   ├── NetworkManager/
-│           │   │   └── NetworkManager.conf     # 网络管理配置 (dns=default, 连通性 uri=gitee, 无限重试)
+│           │   │   ├── NetworkManager.conf     # 网络管理配置 (dns=default, 连通性 uri=gitee, 无限重试)
+│           │   │   └── system-connections/
+│           │   │       └── end0-dns-fallback.nmconnection  # 有线网卡追加公共 DNS 兜底 (不写死网关)
 │           │   ├── systemd/
 │           │   │   ├── resolved.conf           # DNS 配置 (国内)
 │           │   │   ├── timesyncd.conf          # NTP 配置 (国内)

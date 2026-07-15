@@ -1,0 +1,24 @@
+[connection]
+id=end0-dns-fallback
+uuid=6f8e8c3a-2b1d-4c5e-9f0a-1b2c3d4e5f6a
+type=802-3-ethernet
+interface-name=end0
+autoconnect=true
+autoconnect-priority=10
+
+# DHCP 仍然提供 IP 与路由器 DNS（主用）。
+# 以下公共 DNS 作为“兜底”：当路由器 DNS 对特定域名（如 Cloudflare 托管的
+# checkonline.home-assistant.io / services.home-assistant.io）解析超时/失败时，
+# 由公共 DNS 应答，避免 supervisor 永久判定 No Supervisor connectivity。
+# 公共 DNS 为全球固定地址，与家庭网段/网关无关 → 天然适配任意路由器。
+# dns-priority=50（高于默认 0 → 低优先级 → 仅作回退，不抢占路由器）。
+[ipv4]
+method=auto
+dns=119.29.29.29;223.5.5.5;114.114.114.114;
+dns-priority=50
+ignore-auto-dns=false
+
+[ipv6]
+method=auto
+dns-priority=50
+ignore-auto-dns=false

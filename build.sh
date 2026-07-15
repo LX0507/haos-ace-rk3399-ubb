@@ -155,6 +155,10 @@ chmod +x \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-ensure-files" \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-log-capture" \
     2>/dev/null || true
+# NetworkManager 连接文件必须 0600，否则 NM 拒绝加载（导致公共 DNS 兜底不生效）
+chmod 600 \
+    "operating-system/buildroot-external/rootfs-overlay/etc/NetworkManager/system-connections/end0-dns-fallback.nmconnection" \
+    2>/dev/null || true
 echo "✅ 权限修正完成"
 
 # ============================================================
