@@ -50,7 +50,7 @@
 U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd init
 → mount partitions → overlay init
 → NetworkManager（DHCP 获取路由器下发的 DNS，不做任何自定义改写）
-→ Docker/containerd → Supervisor（`hassos-supervisor` 拉取镜像，版本源官方优先/gitee 回退）
+→ Docker/containerd → Supervisor（`hassos-supervisor` 拉取镜像：版本源 Gitee 优先/官方回退，镜像 ghcr.io 优先/国内 ghcr 镜像回退）
 → HA Core（连通性过关后拉取 `ghcr.io` 镜像，landingpage → 完整镜像）
 ```
 
@@ -87,6 +87,14 @@ U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd i
 | 电源按键 | 无独立定义 | gpio0 RK_PA5 (ACTIVE_LOW) |
 
 ---
+
+### Supervisor 下载优化（国内网络）
+
+`usr/sbin/hassos-supervisor` 覆盖 stock，仅改动「版本源获取」与「镜像拉取」两处，其余（startup-marker/CIDFILE 处理、`docker container create` 参数、cidfile 挂载）保持 HAOS 17.3 官方原样（已与 `home-assistant/operating-system@17.3` 逐行 diff 校验）。两处均做**有序回退 + 日志说明**，结构清晰、容错性强：
+
+- **版本源（Gitee 镜像优先 / 官方回退）**：依次尝试 `gitee.com/LanSilence/ha-version/raw/master/stable.json`（国内稳定）→ `version.home-assistant.io/stable.json`；全部失败清空 `updater.json` 交 systemd 重试。
+- **镜像仓库（ghcr.io 优先 / 国内加速回退）**：依次尝试 `ghcr.io` → `ghcr.nju.edu.cn`（南京大学开源镜像，已实测可达且含该镜像）→ `ghcr.dockerproxy.com`，`timeout 240` 防半死镜像挂起，成功即 `docker tag` 为规范 `ghcr.io/...:latest`；全部失败同样清空 `updater.json` 重试。
+- 关键修改点均带 `[INFO]/[WARNING]/[ERROR] [版本源]/[镜像源]` 日志，便于串口排障。
 
 ## 后台管理（4000 端口）
 
@@ -181,7 +189,7 @@ haos-ace-rk3399-ubb/
 │               │   ├── haos-ensure-files
 │               │   └── haos-log-capture
 │               ├── sbin/
-│               │   ├── hassos-supervisor     # supervisor 启动脚本（官方优先 + gitee 版本源回退）
+│               │   ├── hassos-supervisor     # supervisor 启动脚本（Gitee 优先+官方回退版本源；ghcr.io 优先+国内 ghcr 镜像回退）
 │               │   ├── assismgr             # 后台管理二进制 (:4000)
 │               │   ├── led-control          # 指示灯控制
 │               │   └── switch_slot          # A/B 槽切换

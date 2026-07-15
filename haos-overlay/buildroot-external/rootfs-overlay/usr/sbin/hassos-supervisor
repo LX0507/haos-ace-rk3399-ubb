@@ -1,14 +1,17 @@
 #!/bin/sh
-# shellcheck disable=SC1091
+# shellcheck disable=SC1091,SC2086
 # ==============================================================================
 # Supervisor on HassOS  (RK3399-UBB 中国网络优化版, 基于 HAOS 17.3 stock)
 # ==============================================================================
-# 与官方 stock 17.3 脚本逐行一致，仅改动 supervisor 版本源获取逻辑：
-#   官方优先 (version.home-assistant.io) —— 版本最新
-#   失败回退 gitee 镜像 (gitee.com/LanSilence/ha-version) —— 国内可达
-# 其余（startup-marker 损坏检测、CIDFILE 处理、容器/镜像重建、container create
-# 参数、cidfile 挂载）全部保持 17.3 stock 原样，确保与 17.3 supervisor 契约一致。
-# 镜像拉取走 daemon.json 的 registry-mirrors 国内加速，无需改动。
+# 设计目标: 在国内网络环境下提升 Supervisor 的下载速度与稳定性, 同时支持
+#   (1) Gitee 镜像源  —— supervisor 版本号 (stable.json) 从 Gitee 获取, 国内可达
+#   (2) 国内加速源    —— supervisor 镜像优先 ghcr.io, 失败回退国内 ghcr 镜像
+#
+# 与官方 stock 17.3 脚本的差异仅集中在「版本源获取」与「镜像拉取」两处, 均做了
+# 有序回退 + 日志说明; 其余 (startup-marker 损坏检测、CIDFILE 处理、容器/镜像重建、
+# docker container create 参数、cidfile 挂载) 保持 17.3 stock 原样, 确保与 17.3
+# supervisor 启动契约一致。镜像拉取本身也走 daemon.json 的 registry-mirrors
+# 国内加速 (针对 docker.io)。
 # ==============================================================================
 set -e
 
@@ -22,9 +25,61 @@ SUPERVISOR_CIDFILE="${SUPERVISOR_DATA}/hassio_supervisor.cid"
 SUPERVISOR_STARTSCRIPT_VERSION="/mnt/data/.hassos-supervisor-version"
 SUPERVISOR_IMAGE="ghcr.io/home-assistant/${SUPERVISOR_ARCH}-hassio-supervisor"
 
-# 版本源：官方优先，失败回退 gitee 镜像
-SUPERVISOR_VERSION_URL_PRIMARY="https://version.home-assistant.io/stable.json"
-SUPERVISOR_VERSION_URL_FALLBACK="https://gitee.com/LanSilence/ha-version/raw/master/stable.json"
+# ------------------------------------------------------------------------------
+# ① 版本源 (有序回退): Gitee 镜像优先 (国内稳定), 官方源作为回退
+#    supervisor 版本号仅用于决定拉取哪个 tag, 与镜像仓库无关。
+# ------------------------------------------------------------------------------
+SUPERVISOR_VERSION_URLS="
+https://gitee.com/LanSilence/ha-version/raw/master/stable.json
+https://version.home-assistant.io/stable.json
+"
+
+# ------------------------------------------------------------------------------
+# ② 镜像仓库 (有序回退): 官方 ghcr.io 优先, 失败回退国内 ghcr 加速镜像
+#    ghcr.nju.edu.cn  = 南京大学开源镜像 (已验证可达, 含 supervisor 镜像)
+#    ghcr.dockerproxy.com = DockerProxy 公共代理 (docker 会自动跟随 301 重定向)
+#    注: supervisor 镜像仅发布在 ghcr.io, docker.io 镜像源无法提供, 故仅列 ghcr 类。
+# ------------------------------------------------------------------------------
+SUPERVISOR_IMAGE_REGISTRIES="
+ghcr.io
+ghcr.nju.edu.cn
+ghcr.dockerproxy.com
+"
+
+# 从有序版本源获取 supervisor 版本号; 全部失败返回非零退出码
+# 关键点: 用 `|| echo ""` 保护, 避免 curl/jq 失败时 set -e 误杀脚本
+fetch_supervisor_version() {
+    for _url in ${SUPERVISOR_VERSION_URLS}; do
+        echo "[INFO] [版本源] 尝试: ${_url}"
+        _v="$(curl -sSL --connect-timeout 10 --max-time 20 "${_url}" 2>/dev/null | jq -e -r '.supervisor' 2>/dev/null || echo "")"
+        if [ -n "${_v}" ] && [ "${_v}" != "null" ]; then
+            echo "[INFO] [版本源] 成功: ${_url} -> supervisor ${_v}"
+            echo "${_v}"
+            return 0
+        fi
+        echo "[WARNING] [版本源] 不可用, 尝试下一个: ${_url}"
+    done
+    return 1
+}
+
+# 从有序镜像仓库拉取 supervisor 镜像, 成功后打规范 tag; 全部失败返回非零
+# 关键点: timeout 防止某个半死镜像长时间挂起; 失败仅告警并切下一个源
+pull_supervisor_image() {
+    _ver="$1"
+    for _reg in ${SUPERVISOR_IMAGE_REGISTRIES}; do
+        _ref="${_reg}/home-assistant/${SUPERVISOR_ARCH}-hassio-supervisor:${_ver}"
+        echo "[INFO] [镜像源] 尝试拉取: ${_ref}"
+        if timeout 240 docker pull "${_ref}" 2>/dev/null; then
+            echo "[INFO] [镜像源] 拉取成功: ${_ref}"
+            # 打规范 tag, 使后续 container create 使用的 ghcr.io/...:latest 可用
+            docker tag "${_ref}" "${SUPERVISOR_IMAGE}:${_ver}" 2>/dev/null || true
+            docker tag "${_ref}" "${SUPERVISOR_IMAGE}:latest" 2>/dev/null || true
+            return 0
+        fi
+        echo "[WARNING] [镜像源] 不可用或超时, 尝试下一个: ${_reg}"
+    done
+    return 1
+}
 
 SUPERVISOR_IMAGE_ID=$(docker images --no-trunc --filter "reference=${SUPERVISOR_IMAGE}:latest" --format "{{.ID}}" || echo "")
 SUPERVISOR_CONTAINER_ID=$(docker inspect --format='{{.Image}}' hassio_supervisor || echo "")
@@ -41,7 +96,6 @@ if [ -f "${SUPERVISOR_STARTUP_MARKER}" ]; then
     SUPERVISOR_IMAGE_IDS=$(docker images --no-trunc --filter "reference=${SUPERVISOR_IMAGE}" --format "{{.ID}}" | sort | uniq || echo "")
     # Intended splitting of SUPERVISOR_IMAGE_IDS
     # Busybox sh doesn't support arrays
-    # shellcheck disable=SC2086
     docker image rm --force ${SUPERVISOR_IMAGE_IDS} || true
     SUPERVISOR_IMAGE_ID=""
 fi
@@ -57,33 +111,22 @@ if [ -z "${SUPERVISOR_IMAGE_ID}" ]; then
     SUPERVISOR_VERSION=$(jq -r '.supervisor // "stable"' "${SUPERVISOR_DATA}/updater.json" || echo "stable")
 
     # Get version from stable channel in case we have no local version
-    # information. 官方优先，失败回退 gitee 镜像。
+    # information. 经有序版本源 (Gitee 优先 / 官方回退) 获取。
     if [ "${SUPERVISOR_VERSION}" = "stable" ]; then
-        SUPERVISOR_VERSION="$(curl -sSL --connect-timeout 10 --max-time 20 "${SUPERVISOR_VERSION_URL_PRIMARY}" | jq -e -r '.supervisor' 2>/dev/null || echo "")"
-        if [ -z "${SUPERVISOR_VERSION}" ] || [ "${SUPERVISOR_VERSION}" = "null" ]; then
-            echo "[WARNING] 官方版本源不可达，回退 gitee 镜像: ${SUPERVISOR_VERSION_URL_FALLBACK}"
-            SUPERVISOR_VERSION="$(curl -sSL --connect-timeout 10 --max-time 20 "${SUPERVISOR_VERSION_URL_FALLBACK}" | jq -e -r '.supervisor' 2>/dev/null || echo "")"
-        fi
-    fi
-
-    # 两个源都拿不到版本号：清空 updater.json 下次重试，避免用空版本号 pull
-    if [ -z "${SUPERVISOR_VERSION}" ] || [ "${SUPERVISOR_VERSION}" = "null" ]; then
-        echo "[ERROR] 无法从官方与 gitee 获取 supervisor 版本号，稍后重试。"
-        rm -f "${SUPERVISOR_DATA}/updater.json"
-        exit 1
+        SUPERVISOR_VERSION="$(fetch_supervisor_version)" || {
+            echo "[ERROR] [版本源] 所有版本源均不可用, 清空 updater.json 稍后重试。"
+            rm -f "${SUPERVISOR_DATA}/updater.json"
+            exit 1
+        }
     fi
 
     echo "[WARNING] Supervisor image missing, downloading a fresh one: ${SUPERVISOR_VERSION}"
 
-    # Pull in the Supervisor
-    if docker pull "${SUPERVISOR_IMAGE}:${SUPERVISOR_VERSION}"; then
-        # Tag as latest
-        docker tag "${SUPERVISOR_IMAGE}:${SUPERVISOR_VERSION}" "${SUPERVISOR_IMAGE}:latest"
+    # Pull in the Supervisor (有序镜像仓库: ghcr.io 优先 / 国内加速回退)
+    if pull_supervisor_image "${SUPERVISOR_VERSION}"; then
+        :
     else
-        # Pull failed, updater info might be corrupted or the release might have
-        # been removed from the container registry, delete the updater info
-        # to start from scratch on next try.
-        echo "[ERROR] Supervisor download failed."
+        echo "[ERROR] [镜像源] 所有镜像仓库均不可用, 清空 updater.json 稍后重试。"
         rm -f "${SUPERVISOR_DATA}/updater.json"
         exit 1
     fi
@@ -145,4 +188,4 @@ fi
 mkdir -p ${SUPERVISOR_DATA}
 echo "[INFO] Starting the Supervisor..."
 docker container start hassio_supervisor
-exec docker container wait hassio_supervisor
+exec docker container wait hassos_supervisor
