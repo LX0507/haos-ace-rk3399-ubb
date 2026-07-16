@@ -5,13 +5,20 @@
 # ==============================================================================
 # 设计目标: 在国内网络环境下提升 Supervisor 的下载速度与稳定性, 同时支持
 #   (1) Gitee 镜像源  —— supervisor 版本号 (stable.json) 从 Gitee 获取, 国内可达
-#   (2) 国内加速源    —— supervisor 镜像优先 ghcr.io, 失败回退国内 ghcr 镜像
+#   (2) 国内加速源    —— supervisor 镜像优先 ghcr.io(经 daemon.json 的
+#        registry.ghcr.io.mirrors 透明重定向到 ghcr.nju.edu.cn / r.hassbus.com),
+#        脚本内再做显式回退, 双保险。
 #
 # 与官方 stock 17.3 脚本的差异仅集中在「版本源获取」与「镜像拉取」两处, 均做了
 # 有序回退 + 日志说明; 其余 (startup-marker 损坏检测、CIDFILE 处理、容器/镜像重建、
 # docker container create 参数、cidfile 挂载) 保持 17.3 stock 原样, 确保与 17.3
-# supervisor 启动契约一致。镜像拉取本身也走 daemon.json 的 registry-mirrors
-# 国内加速 (针对 docker.io)。
+# supervisor 启动契约一致。
+#
+# 镜像拉取加速说明:
+#   - ghcr.io 的镜像(supervisor/Core/组件) 通过 daemon.json 的
+#     registry.ghcr.io.mirrors 透明走国内镜像 (ghcr.nju.edu.cn 完整最新、
+#     r.hassbus.com 为 wghaos 源, 部分 tag 命中), 失败自动回退 ghcr.io 官方。
+#   - registry-mirrors(上方 docker.io 类) 仅对 docker.io 生效, 与本处 ghcr 无关。
 # ==============================================================================
 set -e
 
@@ -35,14 +42,17 @@ https://version.home-assistant.io/stable.json
 "
 
 # ------------------------------------------------------------------------------
-# ② 镜像仓库 (有序回退): 官方 ghcr.io 优先, 失败回退国内 ghcr 加速镜像
-#    ghcr.nju.edu.cn  = 南京大学开源镜像 (已验证可达, 含 supervisor 镜像)
+# ② 镜像仓库 (有序回退): 官方 ghcr.io 优先(daemon.json 已将其透明重定向到国内镜像),
+#    失败再显式回退国内 ghcr 加速镜像(与 daemon.json 互为双保险)。
+#    ghcr.nju.edu.cn     = 南京大学开源镜像 (已验证: supervisor/Core/全部组件最新 tag 均 200, 完整)
+#    r.hassbus.com       = 冬瓜 wghaos 镜像源 (harbor, home-assistant/* 命名空间, 部分 tag 命中)
 #    ghcr.dockerproxy.com = DockerProxy 公共代理 (docker 会自动跟随 301 重定向)
-#    注: supervisor 镜像仅发布在 ghcr.io, docker.io 镜像源无法提供, 故仅列 ghcr 类。
+#    注: supervisor/Core/组件镜像仅发布在 ghcr.io, docker.io 镜像源无法提供, 故仅列 ghcr 类。
 # ------------------------------------------------------------------------------
 SUPERVISOR_IMAGE_REGISTRIES="
 ghcr.io
 ghcr.nju.edu.cn
+r.hassbus.com
 ghcr.dockerproxy.com
 "
 

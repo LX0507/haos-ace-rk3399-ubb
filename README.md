@@ -94,7 +94,8 @@ U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd i
 `usr/sbin/hassos-supervisor` 覆盖 stock，仅改动「版本源获取」与「镜像拉取」两处，其余（startup-marker/CIDFILE 处理、`docker container create` 参数、cidfile 挂载）保持 HAOS 17.3 官方原样（已与 `home-assistant/operating-system@17.3` 逐行 diff 校验）。两处均做**有序回退 + 日志说明**，结构清晰、容错性强：
 
 - **版本源（Gitee 镜像优先 / 官方回退）**：依次尝试 `gitee.com/LanSilence/ha-version/raw/master/stable.json`（国内稳定）→ `version.home-assistant.io/stable.json`；全部失败清空 `updater.json` 交 systemd 重试。
-- **镜像仓库（ghcr.io 优先 / 国内加速回退）**：依次尝试 `ghcr.io` → `ghcr.nju.edu.cn`（南京大学开源镜像，已实测可达且含该镜像）→ `ghcr.dockerproxy.com`，`timeout 240` 防半死镜像挂起，成功即 `docker tag` 为规范 `ghcr.io/...:latest`；全部失败同样清空 `updater.json` 重试。
+- **镜像仓库（ghcr.io 优先 / 国内加速回退）**：依次尝试 `ghcr.io` → `ghcr.nju.edu.cn`（南京大学开源镜像，已实测 supervisor/Core/全部组件最新 tag 均 HTTP 200，最完整）→ `r.hassbus.com`（冬瓜 wghaos 源，harbor `home-assistant/*` 命名空间，部分 tag 命中）→ `ghcr.dockerproxy.com`，`timeout 240` 防半死镜像挂起，成功即 `docker tag` 为规范 `ghcr.io/...:latest`；全部失败同样清空 `updater.json` 重试。
+- **ghcr 透明镜像（`daemon.json` 的 `registry.ghcr.io.mirrors`）**：Core 与组件（dns/audio/cli/observer/multicast）由 Supervisor 经 docker 直接拉 `ghcr.io/...`，本配置把 `ghcr.io` 透明重定向到 `ghcr.nju.edu.cn`(主)→`r.hassbus.com`(备)，失败自动回退官方 `ghcr.io`。注意 `registry-mirrors`(docker.io 类) 只对 `docker.io` 生效，对 `ghcr.io` 无效——这是与早期版本的关键修正。
 - 关键修改点均带 `[INFO]/[WARNING]/[ERROR] [版本源]/[镜像源]` 日志，便于串口排障。
 
 ## 后台管理（4000 端口）
@@ -177,7 +178,7 @@ haos-ace-rk3399-ubb/
 │       │   └── rkbin/                # Rockchip 预编译二进制
 │       └── rootfs-overlay/
 │           ├── etc/
-│           │   ├── docker/daemon.json          # Docker 配置 (registry-mirrors, 无 dns 字段)
+│           │   ├── docker/daemon.json          # Docker 配置 (docker.io 镜像 + ghcr.io 透明镜像: ghcr.nju.edu.cn/r.hassbus.com, 无 dns 字段)
 │           │   ├── NetworkManager/
 │           │   │   ├── NetworkManager.conf     # 网络管理配置 (dns=default, 连通性 uri=gitee, 无限重试)
 │           │   │   └── system-connections/
