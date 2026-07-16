@@ -198,4 +198,4 @@ fi
 mkdir -p ${SUPERVISOR_DATA}
 echo "[INFO] Starting the Supervisor..."
 docker container start hassio_supervisor
-exec docker container wait hassos_supervisor
+exec docker container wait hassio_supervisor
