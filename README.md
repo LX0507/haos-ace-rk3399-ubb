@@ -49,8 +49,8 @@
 ```
 U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd init
 → mount partitions → overlay init
-→ NetworkManager（`end0-china-dns` 连接：IP 走 DHCP，DNS 主用国内公共 DNS 119.29.29.29/223.5.5.5/114.114.114.114，绕过路由器对 Cloudflare 域名解析超时 + systemd-resolved 默认回退到被墙的 Cloudflare DoT 1.1.1.1:853）
-→ `hassos-dns-china` 服务（首启后通过官方 `ha dns options` API 把 plugin-dns 上游钉死为公共 DNS，持久化到 /mnt/data，双重保险）
+→ NetworkManager（IP 走 DHCP，**DNS 使用路由器下发的 DNS**；该网络会丢弃发往外部 DNS 服务器的 UDP/53，
+  故不再强制公共 DNS——强制公共 DNS 反而会令 checkonline/ghcr.io 解析全部超时、No Supervisor connectivity）
 → Docker/containerd → Supervisor（`hassos-supervisor` 拉取镜像：版本源 Gitee 优先/官方回退，镜像 ghcr.io 优先/国内 ghcr 镜像回退）
 → HA Core（连通性过关后拉取 `ghcr.io` 镜像，landingpage → 完整镜像）
 ```
@@ -181,12 +181,11 @@ haos-ace-rk3399-ubb/
 │           │   ├── docker/daemon.json          # Docker 配置 (docker.io 类 registry-mirrors, 无 dns 字段, 无 registry 字段)
 │           │   ├── NetworkManager/
 │           │   │   ├── NetworkManager.conf     # 网络管理配置 (dns=default, 连通性 uri=gitee, 无限重试)
-│           │   │   └── system-connections/
-│           │   │       └── end0-china-dns.nmconnection  # 有线网卡: DNS 主用公共 DNS(忽略路由器 DNS) 绕开 Cloudflare 被墙
+│           │   │   └── system-connections/      # (默认用 DHCP 下发的路由器 DNS，不强制公共 DNS)
 │           │   ├── systemd/
-│           │   │   ├── resolved.conf           # 覆盖 FallbackDNS 为国内公共 DNS(去掉默认 1.1.1.1)
+│           │   │   ├── resolved.conf           # DNS 由 NM 注入路由器 DNS；FallbackDNS 仅兜底
 │           │   │   └── system/
-│           │   │       └── hassos-dns-china.service  # 首启把 plugin-dns 上游钉为公共 DNS(官方 API)
+│           │   │       └── haos-allow-4000.service  # 放行 assismgr 后台端口 tcp/4000
 │           │   │   ├── timesyncd.conf          # NTP 配置 (国内)
 │           │   │   └── journald.conf           # 日志持久化
 │           │   └── tmpfiles.d/                 # 临时文件/目录
@@ -196,7 +195,7 @@ haos-ace-rk3399-ubb/
 │               │   └── haos-log-capture
 │               ├── sbin/
 │               │   ├── hassos-supervisor     # supervisor 启动脚本（Gitee 优先+官方回退版本源；ghcr.io 优先+国内 ghcr 镜像回退）
-│               │   ├── hassos-dns-china      # 首启把 plugin-dns 上游钉为公共 DNS（官方 ha dns options API）
+│               │   ├── haos-allow-4000       # 放行 assismgr 后台端口 tcp/4000 (nftables)
 │               │   ├── assismgr             # 后台管理二进制 (:4000)
 │               │   ├── led-control          # 指示灯控制
 │               │   └── switch_slot          # A/B 槽切换
