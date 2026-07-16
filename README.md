@@ -95,7 +95,7 @@ U-Boot SPL (idbloader) → U-Boot → Linux Kernel (6.12.85) + DTB → systemd i
 
 - **版本源（Gitee 镜像优先 / 官方回退）**：依次尝试 `gitee.com/LanSilence/ha-version/raw/master/stable.json`（国内稳定）→ `version.home-assistant.io/stable.json`；全部失败清空 `updater.json` 交 systemd 重试。
 - **镜像仓库（ghcr.io 优先 / 国内加速回退）**：依次尝试 `ghcr.io` → `ghcr.nju.edu.cn`（南京大学开源镜像，已实测 supervisor/Core/全部组件最新 tag 均 HTTP 200，最完整）→ `r.hassbus.com`（冬瓜 wghaos 源，harbor `home-assistant/*` 命名空间，部分 tag 命中）→ `ghcr.dockerproxy.com`，`timeout 240` 防半死镜像挂起，成功即 `docker tag` 为规范 `ghcr.io/...:latest`；全部失败同样清空 `updater.json` 重试。
-- **ghcr 透明镜像（`daemon.json` 的 `registry.ghcr.io.mirrors`）**：Core 与组件（dns/audio/cli/observer/multicast）由 Supervisor 经 docker 直接拉 `ghcr.io/...`，本配置把 `ghcr.io` 透明重定向到 `ghcr.nju.edu.cn`(主)→`r.hassbus.com`(备)，失败自动回退官方 `ghcr.io`。注意 `registry-mirrors`(docker.io 类) 只对 `docker.io` 生效，对 `ghcr.io` 无效——这是与早期版本的关键修正。
+- **ghcr 镜像加速（脚本显式回退，非 daemon.json 透明重定向）**：Docker Engine 的 `daemon.json` **不支持** `registry`/`registry.ghcr.io.mirrors` 这类字段（那是 containerd `hosts.toml`/Podman 语法）。曾误用该字段导致 `dockerd` 报 "unknown configuration option: ghcr.io" 而拒绝启动、触发重启循环（RAUC slot 失败）。故 ghcr 加速**全部由 `hassos-supervisor` 脚本显式 `docker pull` + `docker tag` 完成**（见上一条回退链），`daemon.json` 仅保留 `docker.io` 类 `registry-mirrors` 与无 `dns` 字段。
 - 关键修改点均带 `[INFO]/[WARNING]/[ERROR] [版本源]/[镜像源]` 日志，便于串口排障。
 
 ## 后台管理（4000 端口）
@@ -178,7 +178,7 @@ haos-ace-rk3399-ubb/
 │       │   └── rkbin/                # Rockchip 预编译二进制
 │       └── rootfs-overlay/
 │           ├── etc/
-│           │   ├── docker/daemon.json          # Docker 配置 (docker.io 镜像 + ghcr.io 透明镜像: ghcr.nju.edu.cn/r.hassbus.com, 无 dns 字段)
+│           │   ├── docker/daemon.json          # Docker 配置 (docker.io 类 registry-mirrors, 无 dns 字段, 无 registry 字段)
 │           │   ├── NetworkManager/
 │           │   │   ├── NetworkManager.conf     # 网络管理配置 (dns=default, 连通性 uri=gitee, 无限重试)
 │           │   │   └── system-connections/

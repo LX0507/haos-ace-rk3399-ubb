@@ -5,20 +5,23 @@
 # ==============================================================================
 # 设计目标: 在国内网络环境下提升 Supervisor 的下载速度与稳定性, 同时支持
 #   (1) Gitee 镜像源  —— supervisor 版本号 (stable.json) 从 Gitee 获取, 国内可达
-#   (2) 国内加速源    —— supervisor 镜像优先 ghcr.io(经 daemon.json 的
-#        registry.ghcr.io.mirrors 透明重定向到 ghcr.nju.edu.cn / r.hassbus.com),
-#        脚本内再做显式回退, 双保险。
+#   (2) 国内加速源    —— supervisor 镜像优先 ghcr.io(国内通常可直连), 失败时本脚本
+#        显式改从国内 ghcr 镜像(ghcr.nju.edu.cn / r.hassbus.com) pull 再 tag 回
+#        ghcr.io 规范名, 实现容错回退。
 #
 # 与官方 stock 17.3 脚本的差异仅集中在「版本源获取」与「镜像拉取」两处, 均做了
 # 有序回退 + 日志说明; 其余 (startup-marker 损坏检测、CIDFILE 处理、容器/镜像重建、
 # docker container create 参数、cidfile 挂载) 保持 17.3 stock 原样, 确保与 17.3
 # supervisor 启动契约一致。
 #
-# 镜像拉取加速说明:
-#   - ghcr.io 的镜像(supervisor/Core/组件) 通过 daemon.json 的
-#     registry.ghcr.io.mirrors 透明走国内镜像 (ghcr.nju.edu.cn 完整最新、
-#     r.hassbus.com 为 wghaos 源, 部分 tag 命中), 失败自动回退 ghcr.io 官方。
-#   - registry-mirrors(上方 docker.io 类) 仅对 docker.io 生效, 与本处 ghcr 无关。
+# 镜像拉取加速说明 (重要 — 勿再犯的坑):
+#   - Docker Engine 的 daemon.json 只支持全局 registry-mirrors, 且它仅对 docker.io
+#     生效; **不存在** registry.<host>.mirrors 这种 per-registry 字段(那是 containerd
+#     hosts.toml / podman 的语法)。曾把它写进 daemon.json 导致 dockerd 拒绝启动、
+#     系统 boot loop —— 已移除, 切勿再加。
+#   - 因此 ghcr.io 镜像(supervisor/Core/组件)的加速只能靠: ①ghcr.io 直连(本网络环境
+#     实测可达); ②本脚本对 supervisor 镜像做显式 pull-and-tag 回退(下方 registry 列表)。
+#     组件/Core 由 supervisor 内部逻辑拉取, 走 ghcr.io 直连。
 # ==============================================================================
 set -e
 
@@ -42,8 +45,8 @@ https://version.home-assistant.io/stable.json
 "
 
 # ------------------------------------------------------------------------------
-# ② 镜像仓库 (有序回退): 官方 ghcr.io 优先(daemon.json 已将其透明重定向到国内镜像),
-#    失败再显式回退国内 ghcr 加速镜像(与 daemon.json 互为双保险)。
+# ② 镜像仓库 (有序回退): 官方 ghcr.io 优先(国内通常可直连), 失败时本脚本显式从
+#    国内 ghcr 加速镜像 pull 再 tag 回 ghcr.io 规范名(纯脚本层容错, 不依赖 daemon.json)。
 #    ghcr.nju.edu.cn     = 南京大学开源镜像 (已验证: supervisor/Core/全部组件最新 tag 均 200, 完整)
 #    r.hassbus.com       = 冬瓜 wghaos 镜像源 (harbor, home-assistant/* 命名空间, 部分 tag 命中)
 #    ghcr.dockerproxy.com = DockerProxy 公共代理 (docker 会自动跟随 301 重定向)

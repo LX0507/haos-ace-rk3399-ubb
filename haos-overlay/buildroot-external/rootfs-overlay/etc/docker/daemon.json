@@ -11,13 +11,5 @@
         "https://docker.1panel.live",
         "https://docker.mirrors.ustc.edu.cn",
         "https://hub-mirror.c.163.com"
-    ],
-    "registry": {
-        "ghcr.io": {
-            "mirrors": [
-                "https://ghcr.nju.edu.cn",
-                "https://r.hassbus.com"
-            ]
-        }
-    }
+    ]
 }
