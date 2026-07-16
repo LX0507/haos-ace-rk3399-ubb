@@ -1,0 +1,12 @@
+[Unit]
+Description=Allow assismgr web UI (tcp/4000) through HAOS host firewall
+After=hassos-supervisor.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/haos-allow-4000
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+#!/bin/sh
+# haos-allow-4000 — 允许从 LAN 访问 assismgr 管理后台(tcp/4000)。
+# HAOS 主机防火墙默认只放行 80/443/8123 等端口，自定义端口 4000 会被丢弃。
+# 做法：找到已放行 8123 的 nftables chain，镜像一条 4000 的 accept 规则。
+# 若未找到（说明并未限制 4000），则不做任何改动，安全无害。
+set -u
+
+if ! command -v nft >/dev/null 2>&1; then
+    exit 0
+fi
+
+RULESET=$(nft list ruleset 2>/dev/null)
+
+# 找到包含 "dport 8123 accept" 的 chain，取其 table/chain 名
+TBL=$(printf '%s\n' "$RULESET" | awk '/table inet [a-zA-Z0-9_-]+ /{t=$0} /dport 8123 accept/{print t; exit}' | sed -n 's/.*table inet \([a-zA-Z0-9_-]*\).*/\1/p')
+CHN=$(printf '%s\n' "$RULESET" | awk '/chain [a-zA-Z0-9_-]+ /{c=$0} /dport 8123 accept/{print c; exit}' | sed -n 's/.*chain \([a-zA-Z0-9_-]*\).*/\1/p')
+
+[ -z "$TBL" ] && exit 0
+[ -z "$CHN" ] && exit 0
+
+# 已存在则跳过
+if printf '%s\n' "$RULESET" | grep -q "dport 4000 accept"; then
+    exit 0
+fi
+
+nft add rule inet "$TBL" "$CHN" tcp dport 4000 accept 2>/dev/null || true
+exit 0

@@ -1,0 +1,13 @@
+[Unit]
+Description=Force China-friendly public DNS on end0 before Supervisor takes over
+After=NetworkManager.service network-online.target
+Before=hassos-supervisor.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/haos-net-china
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

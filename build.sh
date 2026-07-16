@@ -153,6 +153,8 @@ echo "🔧 修正关键脚本权限 ..."
 chmod +x \
     "operating-system/buildroot-external/rootfs-overlay/usr/sbin/hassos-supervisor" \
     "operating-system/buildroot-external/rootfs-overlay/usr/sbin/hassos-dns-china" \
+    "operating-system/buildroot-external/rootfs-overlay/usr/sbin/haos-net-china" \
+    "operating-system/buildroot-external/rootfs-overlay/usr/sbin/haos-allow-4000" \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-ensure-files" \
     "operating-system/buildroot-external/rootfs-overlay/usr/libexec/haos-log-capture" \
     2>/dev/null || true
@@ -164,10 +166,14 @@ chmod 600 \
 # 优先用符号链接；Windows 本地构建无法创建符号链接时退化为复制（同样可启用）。
 ROOTFS_WANTS="operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/multi-user.target.wants"
 mkdir -p "$ROOTFS_WANTS"
-if [ -f "operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/hassos-dns-china.service" ]; then
-    ln -sf "../hassos-dns-china.service" "$ROOTFS_WANTS/hassos-dns-china.service" 2>/dev/null \
-        || cp -f "operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/hassos-dns-china.service" "$ROOTFS_WANTS/hassos-dns-china.service"
-fi
+# 启用所有自定义一次性服务（haos-net-china 在 supervisor 接管前钉死公共 DNS；
+# haos-dns-china 持久钉死 plugin-dns 上游；haos-allow-4000 放行 assismgr 后台端口）。
+for svc in hassos-dns-china haos-net-china haos-allow-4000; do
+    if [ -f "operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/$svc.service" ]; then
+        ln -sf "../$svc.service" "$ROOTFS_WANTS/$svc.service" 2>/dev/null \
+            || cp -f "operating-system/buildroot-external/rootfs-overlay/etc/systemd/system/$svc.service" "$ROOTFS_WANTS/$svc.service"
+    fi
+done
 echo "✅ 权限修正完成"
 
 # ============================================================
